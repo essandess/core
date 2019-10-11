@@ -35,6 +35,7 @@ struct mail_deliver_user {
 };
 
 deliver_mail_func_t *deliver_mail = NULL;
+deliver_hook_func_t *deliver_hook = NULL;
 
 struct mail_deliver_mailbox {
 	union mailbox_module_context module_ctx;
@@ -459,6 +460,9 @@ int mail_deliver_save(struct mail_deliver_context *ctx, const char *mailbox,
 		}
 		mail_deliver_log(ctx, "saved mail to %s", mailbox_name);
 		pool_unref(&changes.pool);
+
+		if (deliver_hook != NULL)
+			deliver_hook(ctx, mailbox);
 	} else {
 		mail_deliver_log(ctx, "save failed to %s: %s", mailbox_name,
 			mail_storage_get_last_internal_error(*storage_r, &error));
@@ -547,6 +551,8 @@ mail_do_deliver(struct mail_deliver_context *ctx,
 			/* success. message may or may not have been saved. */
 			ret = 0;
 		}
+		if (!ret && deliver_hook)
+			deliver_hook(ctx, ctx->rcpt_default_mailbox);
 		mail_duplicate_db_deinit(&ctx->dup_db);
 		if (ret < 0 && mail_deliver_is_tempfailed(ctx, *storage_r))
 			return -1;

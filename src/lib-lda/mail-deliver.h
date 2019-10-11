@@ -127,6 +127,9 @@ typedef int deliver_mail_func_t(struct mail_deliver_context *ctx,
 				struct mail_storage **storage_r);
 
 extern deliver_mail_func_t *deliver_mail;
+typedef void deliver_hook_func_t(struct mail_deliver_context *ctx,
+	const char *mailbox);
+extern deliver_hook_func_t *deliver_hook;
 
 const struct var_expand_table *
 mail_deliver_ctx_get_log_var_expand_table(struct mail_deliver_context *ctx,

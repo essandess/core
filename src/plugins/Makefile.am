@@ -31,6 +31,7 @@ SUBDIRS = \
 	notify \
 	notify-status \
 	push-notification \
+	push-notify \
 	mail-filter \
 	mail-log \
 	$(MAIL_LUA) \

@@ -76,6 +76,7 @@ static const struct command imap_ext_commands[] = {
 	{ "UID SORT",		cmd_sort,        COMMAND_FLAG_BREAKS_SEQS },
 	{ "UID THREAD",		cmd_thread,      COMMAND_FLAG_BREAKS_SEQS },
 	{ "UNSELECT",		cmd_unselect,    COMMAND_FLAG_BREAKS_MAILBOX },
+	{ "XAPPLEPUSHSERVICE",	cmd_x_apple_push_service,	0},
 	{ "X-CANCEL",		cmd_x_cancel,    0 },
 	{ "X-STATE",		cmd_x_state,     COMMAND_FLAG_REQUIRES_SYNC },
 	{ "XLIST",		cmd_list,        0 },

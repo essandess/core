@@ -121,6 +121,7 @@ bool cmd_thread(struct client_command_context *cmd);
 bool cmd_uid_expunge(struct client_command_context *cmd);
 bool cmd_move(struct client_command_context *cmd);
 bool cmd_unselect(struct client_command_context *cmd);
+bool cmd_x_apple_push_service(struct client_command_context *cmd);
 bool cmd_x_cancel(struct client_command_context *cmd);
 bool cmd_x_state(struct client_command_context *cmd);
 

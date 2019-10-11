@@ -82,6 +82,8 @@ struct auth_settings {
 	ARRAY(struct auth_passdb_settings *) passdbs;
 	ARRAY(struct auth_userdb_settings *) userdbs;
 
+	const char *aps_topic;
+
 	const char *base_dir;
 	const char *ssl_client_ca_dir;
 	const char *ssl_client_ca_file;

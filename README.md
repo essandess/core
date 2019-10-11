@@ -1,3 +1,53 @@
+Apple Push Notification Service (APNS) Plugin
+=============================================
+
+This branch of [dovecot/core](https://github.com/dovecot/core)
+includes a plugin for APNS. This is based on
+[matthewpowell/pushnotify](https://github.com/matthewpowell/pushnotify),
+[cullum/freebsd-ports](https://github.com/cullum/freebsd-ports/tree/master/mail),
+and this [post](https://www.c0ffee.net/blog/dovecot-push-notifications/).
+
+APNS use requires these steps:
+
+1. Acquire APNS Mail certificates from a (virtual) macOS
+   High Sierra 10.13 and Server.app version 5.7. Export
+   the certificates from the Keychain into the file
+   com.apple.servermgrd.apns.mail.p12 . **Note**: APNS Mail
+   certificate creation is deprecated on Server.app version 5.8+.
+2. Convert the APNS Mail certificates to PEM files:
+```
+       openssl pkcs12 -in com.apple.servermgrd.apns.mail.p12  \
+           -clcerts -nokeys | sed '/BEGIN CERTIFICATE/,$!d'   \
+       > mail.crt
+       sudo install -m 0644 -o _dovecot -g _dovenull \
+           mail.crt /opt/local/etc/dovecot-apns
+       openssl pkcs12 -in com.apple.servermgrd.apns.mail.p12  \
+           -nodes -nocerts | sed '/BEGIN PRIVATE KEY/,$!d'    \
+       > mail.key
+       sudo install -m 0640 -o _dovecot -g _dovenull \
+           mail.key /opt/local/etc/dovecot-apns
+```
+3. Configure dovecot for APNS:
+```
+   /opt/local/etc/dovecot/conf.d/15-lda.conf:
+   protocol lda { mail_plugins = $mail_plugins push_notify }
+```
+```
+   /opt/local/etc/dovecot/conf.d/90-apns.conf:
+   aps_topic = com.apple.mail.XServer.<UUID>
+```
+   where the certificate's UUID is obtained from the command:
+```
+       openssl x509 -text -noout                            \
+           -in /opt/local/etc/dovecot-apns/mail.crt         \
+       | grep -E -o 'com.apple.mail.XServer.[0-9a-f-]+'
+```
+4. Launch the APNS daemon (macOS):
+```
+       sudo launchctl load -w \
+           /Library/LaunchDaemons/org.macports.dovecot-apns.plist
+```
+
 Installation
 ============
 

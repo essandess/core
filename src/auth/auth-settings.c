@@ -269,6 +269,8 @@ static const struct setting_define auth_setting_defines[] = {
 	DEFLIST(passdbs, "passdb", &auth_passdb_setting_parser_info),
 	DEFLIST(userdbs, "userdb", &auth_userdb_setting_parser_info),
 
+	DEF_NOPREFIX(SET_STR, aps_topic),
+
 	DEF_NOPREFIX(SET_STR, base_dir),
 	DEF_NOPREFIX(SET_BOOL, verbose_proctitle),
 	DEF_NOPREFIX(SET_UINT, first_valid_uid),
@@ -330,6 +332,8 @@ static const struct auth_settings auth_default_settings = {
 
 	.passdbs = ARRAY_INIT,
 	.userdbs = ARRAY_INIT,
+
+	.aps_topic = "",
 
 	.base_dir = PKG_RUNDIR,
 	.verbose_proctitle = FALSE,

@@ -181,6 +181,8 @@ struct client *client_create(int fd_in, int fd_out,
 		   a chance of working */
 		client_add_capability(client, "SEARCH=FUZZY");
 	}
+	if (set->aps_topic != NULL && *set->aps_topic)
+		str_append(client->capability_string, " XAPPLEPUSHSERVICE");
 
 	mail_set = mail_user_set_get_storage_set(user);
 	if (mail_set->mailbox_list_index) {

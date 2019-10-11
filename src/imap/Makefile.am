@@ -64,6 +64,7 @@ cmds = \
 	cmd-unselect.c \
 	cmd-unsubscribe.c \
 	cmd-urlfetch.c \
+	cmd-x-apple-push-service.c \
 	cmd-x-cancel.c \
 	cmd-x-state.c
 

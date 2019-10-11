@@ -117,6 +117,8 @@ static const char *get_capability(struct client *client)
 		str_append(cap_str, " STARTTLS");
 	if (is_login_cmd_disabled(client))
 		str_append(cap_str, " LOGINDISABLED");
+	if (*imap_client->set->aps_topic)
+		str_append(cap_str, " XAPPLEPUSHSERVICE");
 
 	client_authenticate_get_capabilities(client, cap_str);
 	return str_c(cap_str);
