@@ -6,6 +6,7 @@
 #include "base64.h"
 #include "buffer.h"
 #include "hex-binary.h"
+#include "mech-digest-md5-private.h"
 #include "md5.h"
 #include "randgen.h"
 #include "str.h"
@@ -19,39 +20,7 @@
 /* Linear whitespace */
 #define IS_LWS(c) ((c) == ' ' || (c) == '\t')
 
-enum qop_option {
-	QOP_AUTH	= 0x01,	/* authenticate */
-	QOP_AUTH_INT	= 0x02, /* + integrity protection, not supported yet */
-	QOP_AUTH_CONF	= 0x04, /* + encryption, not supported yet */
-
-	QOP_COUNT	= 3
-};
-
 static const char *qop_names[] = { "auth", "auth-int", "auth-conf" };
-
-struct digest_auth_request {
-	struct auth_request auth_request;
-
-	pool_t pool;
-
-	/* requested: */
-	char *nonce;
-	enum qop_option qop;
-
-	/* received: */
-	char *username;
-	char *cnonce;
-	char *nonce_count;
-	char *qop_value;
-	char *digest_uri; /* may be NULL */
-	char *authzid; /* may be NULL, authorization ID */
-	unsigned char response[32];
-	unsigned long maxbuf;
-	bool nonce_found:1;
-
-	/* final reply: */
-	char *rspauth;
-};
 
 static string_t *get_digest_challenge(struct digest_auth_request *request)
 {
@@ -257,7 +226,10 @@ static bool parse_next(char **data, char **key, char **value)
 		while (*p != '\0' && *p != ',')
 			p++;
 
-		*data = p+1;
+		*data = p;
+		/* If there is more to parse, ensure it won't get skipped
+		   because *p is set to NUL below */
+		if (**data != '\0') (*data)++;
 		while (IS_LWS(p[-1]))
 			p--;
 		*p = '\0';
@@ -285,9 +257,8 @@ static bool auth_handle_response(struct digest_auth_request *request,
 	(void)str_lcase(key);
 
 	if (strcmp(key, "realm") == 0) {
-		if (request->auth_request.realm == NULL && *value != '\0')
-			request->auth_request.realm =
-				p_strdup(request->pool, value);
+		if (request->auth_request.fields.realm == NULL && *value != '\0')
+			auth_request_set_realm(&request->auth_request, value);
 		return TRUE;
 	}
 
@@ -551,10 +522,10 @@ mech_digest_md5_auth_continue(struct auth_request *auth_request,
 	const char *username, *error;
 
 	if (parse_digest_response(request, data, data_size, &error)) {
-		if (auth_request->realm != NULL &&
+		if (auth_request->fields.realm != NULL &&
 		    strchr(request->username, '@') == NULL) {
 			username = t_strconcat(request->username, "@",
-					       auth_request->realm, NULL);
+					       auth_request->fields.realm, NULL);
 			auth_request->domain_is_realm = TRUE;
 		} else {
 			username = request->username;

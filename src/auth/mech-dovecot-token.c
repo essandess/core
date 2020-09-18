@@ -30,12 +30,13 @@ mech_dovecot_token_auth_continue(struct auth_request *request,
 				username = (const char *)data + i;
 			else if (count == 3)
 				session_id = (const char *)data + i;
-			else {
+			else if (count == 4) {
 				len = data_size - i;
 				auth_token = p_strndup(unsafe_data_stack_pool,
 						       data+i, len);
-				break;
 			}
+			else
+				break;
 		}
 	}	
 
@@ -49,10 +50,11 @@ mech_dovecot_token_auth_continue(struct auth_request *request,
 		auth_request_fail(request);
 	} else {
 		const char *valid_token =
-			auth_token_get(service, pid, request->user, session_id);
+			auth_token_get(service, pid, request->fields.user,
+				       session_id);
 
 		if (auth_token != NULL &&
-		    strcmp(auth_token, valid_token) == 0) {
+		    str_equals_timing_almost_safe(auth_token, valid_token)) {
 			request->passdb_success = TRUE;
 			auth_request_set_field(request, "userdb_client_service", service, "");
 			auth_request_success(request, NULL, 0);
@@ -80,7 +82,7 @@ static struct auth_request *mech_dovecot_token_auth_new(void)
 const struct mech_module mech_dovecot_token = {
 	"DOVECOT-TOKEN",
 
-	.flags = MECH_SEC_PRIVATE,
+	.flags = MECH_SEC_PRIVATE | MECH_SEC_ALLOW_NULS,
 	.passdb_need = MECH_PASSDB_NEED_NOTHING,
 
 	mech_dovecot_token_auth_new,

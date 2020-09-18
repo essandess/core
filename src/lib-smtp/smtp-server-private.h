@@ -13,7 +13,7 @@
 
 #define SMTP_SERVER_DEFAULT_CAPABILITIES \
 	(SMTP_CAPABILITY_SIZE | SMTP_CAPABILITY_ENHANCEDSTATUSCODES | \
-		SMTP_CAPABILITY_8BITMIME | SMTP_CAPABILITY_CHUNKING)
+	 SMTP_CAPABILITY_8BITMIME | SMTP_CAPABILITY_CHUNKING)
 
 struct smtp_server_cmd_hook;
 struct smtp_server_reply;
@@ -76,7 +76,7 @@ struct smtp_server_reply {
 	unsigned int index;
 	struct event *event;
 
-	/* replies may share content */
+	/* Replies may share content */
 	struct smtp_server_reply_content *content;
 
 	bool submitted:1;
@@ -123,6 +123,7 @@ struct smtp_server_recipient_private {
 
 struct smtp_server_state_data {
 	enum smtp_server_state state;
+	char *args;
 	time_t timestamp;
 
 	unsigned int pending_mail_cmds;
@@ -241,8 +242,11 @@ void smtp_server_command_debug(struct smtp_server_cmd_ctx *cmd,
 struct smtp_server_command *
 smtp_server_command_new_invalid(struct smtp_server_connection *conn);
 struct smtp_server_command *
-smtp_server_command_new(struct smtp_server_connection *conn,
-	const char *name, const char *params);
+smtp_server_command_new(struct smtp_server_connection *conn, const char *name);
+
+void smtp_server_command_execute(struct smtp_server_command *cmd,
+				 const char *params);
+
 void smtp_server_command_ref(struct smtp_server_command *cmd);
 bool smtp_server_command_unref(struct smtp_server_command **_cmd);
 void smtp_server_command_abort(struct smtp_server_command **_cmd);
@@ -272,36 +276,25 @@ smtp_server_command_is_complete(struct smtp_server_command *cmd)
 		!smtp_server_connection_pending_command_data(conn));
 }
 
-void smtp_server_cmd_ehlo(struct smtp_server_cmd_ctx *cmd,
-	const char *params);
-void smtp_server_cmd_helo(struct smtp_server_cmd_ctx *cmd,
-	const char *params);
+void smtp_server_cmd_ehlo(struct smtp_server_cmd_ctx *cmd, const char *params);
+void smtp_server_cmd_helo(struct smtp_server_cmd_ctx *cmd, const char *params);
 void smtp_server_cmd_xclient(struct smtp_server_cmd_ctx *cmd,
-	const char *params);
+			     const char *params);
 
 void smtp_server_cmd_starttls(struct smtp_server_cmd_ctx *cmd,
-	const char *params);
-void smtp_server_cmd_auth(struct smtp_server_cmd_ctx *cmd,
-	const char *params);
+			      const char *params);
+void smtp_server_cmd_auth(struct smtp_server_cmd_ctx *cmd, const char *params);
 
-void smtp_server_cmd_mail(struct smtp_server_cmd_ctx *cmd,
-	const char *params);
-void smtp_server_cmd_rcpt(struct smtp_server_cmd_ctx *cmd,
-	const char *params);
-void smtp_server_cmd_data(struct smtp_server_cmd_ctx *cmd,
-	const char *params);
-void smtp_server_cmd_bdat(struct smtp_server_cmd_ctx *cmd,
-	const char *params);
-void smtp_server_cmd_rset(struct smtp_server_cmd_ctx *cmd,
-	const char *params);
+void smtp_server_cmd_mail(struct smtp_server_cmd_ctx *cmd, const char *params);
+void smtp_server_cmd_rcpt(struct smtp_server_cmd_ctx *cmd, const char *params);
+void smtp_server_cmd_data(struct smtp_server_cmd_ctx *cmd, const char *params);
+void smtp_server_cmd_bdat(struct smtp_server_cmd_ctx *cmd, const char *params);
+void smtp_server_cmd_rset(struct smtp_server_cmd_ctx *cmd, const char *params);
 
-void smtp_server_cmd_noop(struct smtp_server_cmd_ctx *cmd,
-	const char *params);
-void smtp_server_cmd_vrfy(struct smtp_server_cmd_ctx *cmd,
-	const char *params);
+void smtp_server_cmd_noop(struct smtp_server_cmd_ctx *cmd, const char *params);
+void smtp_server_cmd_vrfy(struct smtp_server_cmd_ctx *cmd, const char *params);
 
-void smtp_server_cmd_quit(struct smtp_server_cmd_ctx *cmd,
-	const char *params);
+void smtp_server_cmd_quit(struct smtp_server_cmd_ctx *cmd, const char *params);
 
 /*
  * Connection
@@ -310,7 +303,7 @@ void smtp_server_cmd_quit(struct smtp_server_cmd_ctx *cmd,
 typedef void smtp_server_input_callback_t(void *context);
 
 void smtp_server_connection_debug(struct smtp_server_connection *conn,
-	const char *format, ...) ATTR_FORMAT(2, 3);
+				  const char *format, ...) ATTR_FORMAT(2, 3);
 
 struct connection_list *smtp_server_connection_list_init(void);
 
@@ -339,7 +332,7 @@ void smtp_server_connection_timeout_start(struct smtp_server_connection *conn);
 void smtp_server_connection_timeout_reset(struct smtp_server_connection *conn);
 
 void smtp_server_connection_send_line(struct smtp_server_connection *conn,
-	const char *fmt, ...) ATTR_FORMAT(2, 3);
+				      const char *fmt, ...) ATTR_FORMAT(2, 3);
 void smtp_server_connection_reply_lines(struct smtp_server_connection *conn,
 				        unsigned int status,
 					const char *enh_code,
@@ -350,7 +343,8 @@ void smtp_server_connection_reply_immediate(
 
 void smtp_server_connection_reset_state(struct smtp_server_connection *conn);
 void smtp_server_connection_set_state(struct smtp_server_connection *conn,
-	enum smtp_server_state state);
+				      enum smtp_server_state state,
+				      const char *args) ATTR_NULL(3);
 
 int smtp_server_connection_ssl_init(struct smtp_server_connection *conn);
 
@@ -359,7 +353,8 @@ void smtp_server_connection_clear(struct smtp_server_connection *conn);
 struct smtp_server_transaction *
 smtp_server_connection_get_transaction(struct smtp_server_connection *conn);
 
-void smtp_server_connection_set_proxy_data(struct smtp_server_connection *conn,
+void smtp_server_connection_set_proxy_data(
+	struct smtp_server_connection *conn,
 	const struct smtp_proxy_data *proxy_data);
 
 /*
@@ -373,6 +368,8 @@ smtp_server_recipient_create(struct smtp_server_cmd_ctx *cmd,
 void smtp_server_recipient_ref(struct smtp_server_recipient *rcpt);
 bool smtp_server_recipient_unref(struct smtp_server_recipient **_rcpt);
 void smtp_server_recipient_destroy(struct smtp_server_recipient **_rcpt);
+
+void smtp_server_recipient_initialize(struct smtp_server_recipient *rcpt);
 
 bool smtp_server_recipient_approved(struct smtp_server_recipient **_rcpt);
 void smtp_server_recipient_denied(struct smtp_server_recipient *rcpt,
@@ -419,6 +416,7 @@ void smtp_server_transaction_finished(struct smtp_server_transaction *trans,
  * Server
  */
 
+void smtp_server_event_init(struct smtp_server *server, struct event *event);
 int smtp_server_init_ssl_ctx(struct smtp_server *server, const char **error_r);
 
 #endif

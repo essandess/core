@@ -202,6 +202,11 @@ AS_HELP_STRING([--with-lz4], [Build with LZ4 compression support (auto)]),
   TEST_WITH(lz4, $withval),
   want_lz4=auto)
 
+AC_ARG_WITH(zstd,
+AS_HELP_STRING([--with-zstd], [Build with ZSTD compression support (auto)]),
+  TEST_WITH(zstd, $withval),
+  want_zstd=auto)
+
 AC_ARG_WITH(libcap,
 AS_HELP_STRING([--with-libcap], [Build with libcap support (Dropping capabilities) (auto)]),
   TEST_WITH(libcap, $withval),
@@ -292,6 +297,14 @@ AC_ISC_POSIX
 AC_PROG_CC
 AC_PROG_CPP
 AC_PROG_CXX # lucene plugin needs this
+AC_CHECK_TOOL([FLEX],[flex],[:])
+AC_CHECK_TOOL([BISON],[bison],[:])
+AS_IF([test "$BISON" = ":" && test ! -e src/lib/event-filter-parser.h],
+  AC_MSG_ERROR([Bison is required when building from git])
+])
+AS_IF([test "$FLEX" = ":" && test ! -e src/lib/event-filter-lexer.c],
+  AC_MSG_ERROR([flex is required when building from git])
+])
 AC_HEADER_STDC
 AC_C_INLINE
 AC_PROG_LIBTOOL
@@ -423,7 +436,6 @@ AC_DEFINE_UNQUOTED(PRIuUOFF_T, "$uofft_fmt", [printf() format for uoff_t])
 DOVECOT_SIZE_T_SIGNED
 
 AC_DEFINE_UNQUOTED(SSIZE_T_MAX, $ssizet_max, [Maximum value of ssize_t])
-AC_DEFINE_UNQUOTED(PRIuSIZE_T, "$sizet_fmt", [printf() format for size_t])
 
 dnl we require inttypes.h for PRIu{8,16,32,64} macros
 AC_CHECK_HEADER(inttypes.h,,AC_MSG_ERROR([inttypes.h missing but required]))
@@ -734,6 +746,7 @@ DOVECOT_WANT_ZLIB
 DOVECOT_WANT_BZLIB
 DOVECOT_WANT_LZMA
 DOVECOT_WANT_LZ4
+DOVECOT_WANT_ZSTD
 
 AC_SUBST(COMPRESS_LIBS)
 
@@ -782,7 +795,7 @@ dnl **
 dnl IDLE doesn't really belong to banner. It's there just to make Blackberries
 dnl happy, because otherwise BIS server disables push email.
 capability_banner="IMAP4rev1 SASL-IR LOGIN-REFERRALS ID ENABLE IDLE"
-capability="$capability_banner SORT SORT=DISPLAY THREAD=REFERENCES THREAD=REFS THREAD=ORDEREDSUBJECT MULTIAPPEND URL-PARTIAL CATENATE UNSELECT CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED I18NLEVEL=1 CONDSTORE QRESYNC ESEARCH ESORT SEARCHRES WITHIN CONTEXT=SEARCH LIST-STATUS BINARY MOVE SNIPPET=FUZZY PREVIEW=FUZZY"
+capability="$capability_banner SORT SORT=DISPLAY THREAD=REFERENCES THREAD=REFS THREAD=ORDEREDSUBJECT MULTIAPPEND URL-PARTIAL CATENATE UNSELECT CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED I18NLEVEL=1 CONDSTORE QRESYNC ESEARCH ESORT SEARCHRES WITHIN CONTEXT=SEARCH LIST-STATUS BINARY MOVE SNIPPET=FUZZY PREVIEW=FUZZY STATUS=SIZE SAVEDATE"
 AC_DEFINE_UNQUOTED(CAPABILITY_STRING, "$capability", [IMAP capabilities])
 AC_DEFINE_UNQUOTED(CAPABILITY_BANNER_STRING, "$capability_banner", [IMAP capabilities advertised in banner])
 

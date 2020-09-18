@@ -548,18 +548,22 @@ static struct client_vfuncs imap_client_vfuncs = {
 	.auth_result = imap_client_auth_result,
 	.proxy_reset = imap_proxy_reset,
 	.proxy_parse_line = imap_proxy_parse_line,
-	.proxy_error = imap_proxy_error,
+	.proxy_failed = imap_proxy_failed,
 	.proxy_get_state = imap_proxy_get_state,
 	.send_raw_data = client_common_send_raw_data,
 	.input_next_cmd = imap_client_input_next_cmd,
 	.free = client_common_default_free,
 };
 
-static const struct login_binary imap_login_binary = {
+static struct login_binary imap_login_binary = {
 	.protocol = "imap",
 	.process_name = "imap-login",
 	.default_port = 143,
 	.default_ssl_port = 993,
+
+	.event_category = {
+		.name = "imap",
+	},
 
 	.client_vfuncs = &imap_client_vfuncs,
 	.preinit = imap_login_preinit,

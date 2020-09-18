@@ -21,6 +21,7 @@ struct ioloop *current_ioloop = NULL;
 uint64_t ioloop_global_wait_usecs = 0;
 
 static ARRAY(io_switch_callback_t *) io_switch_callbacks = ARRAY_INIT;
+static ARRAY(io_destroy_callback_t *) io_destroy_callbacks = ARRAY_INIT;
 static bool panic_on_leak = FALSE, panic_on_leak_set = FALSE;
 
 static void io_loop_initialize_handler(struct ioloop *ioloop)
@@ -227,11 +228,10 @@ void io_set_never_wait_alone(struct io *io, bool set)
 
 static void timeout_update_next(struct timeout *timeout, struct timeval *tv_now)
 {
-	if (tv_now == NULL) {
-		if (gettimeofday(&timeout->next_run, NULL) < 0)
-			i_fatal("gettimeofday(): %m");
-	} else {
-                timeout->next_run.tv_sec = tv_now->tv_sec;
+	if (tv_now == NULL)
+		i_gettimeofday(&timeout->next_run);
+	else {
+		timeout->next_run.tv_sec = tv_now->tv_sec;
                 timeout->next_run.tv_usec = tv_now->tv_usec;
 	}
 
@@ -449,10 +449,8 @@ static int timeout_get_wait_time(struct timeout *timeout, struct timeval *tv_r,
 {
 	int ret;
 
-	if (tv_now->tv_sec == 0) {
-		if (gettimeofday(tv_now, NULL) < 0)
-			i_fatal("gettimeofday(): %m");
-	} 
+	if (tv_now->tv_sec == 0)
+		i_gettimeofday(tv_now);
 	tv_r->tv_sec = tv_now->tv_sec;
 	tv_r->tv_usec = tv_now->tv_usec;
 
@@ -466,7 +464,8 @@ static int timeout_get_wait_time(struct timeout *timeout, struct timeval *tv_r,
 		tv_r->tv_usec += 1000000;
 	}
 
-	if (tv_r->tv_sec < 0 || (tv_r->tv_sec == 0 && tv_r->tv_usec < 1000)) {
+	if (tv_r->tv_sec < 0) {
+		/* The timeout should have been called already */
 		tv_r->tv_sec = 0;
 		tv_r->tv_usec = 0;
 		return 0;
@@ -476,7 +475,7 @@ static int timeout_get_wait_time(struct timeout *timeout, struct timeval *tv_r,
 
 	/* round wait times up to next millisecond */
 	ret = tv_r->tv_sec * 1000 + (tv_r->tv_usec + 999) / 1000;
-	i_assert(ret > 0 && tv_r->tv_sec >= 0 && tv_r->tv_usec >= 0);
+	i_assert(ret >= 0 && tv_r->tv_sec >= 0 && tv_r->tv_usec >= 0);
 	return ret;
 }
 
@@ -504,8 +503,7 @@ static int io_loop_get_wait_time(struct ioloop *ioloop, struct timeval *tv_r)
 	}
 
 	if (ioloop->io_pending_count > 0) {
-		if (gettimeofday(&tv_now, NULL) < 0)
-			i_fatal("gettimeofday(): %m");
+		i_gettimeofday(&tv_now);
 		msecs = 0;
 		tv_r->tv_sec = 0;
 		tv_r->tv_usec = 0;
@@ -633,8 +631,7 @@ static void io_loop_handle_timeouts_real(struct ioloop *ioloop)
 	data_stack_frame_t t_id;
 
 	tv_old = ioloop_timeval;
-	if (gettimeofday(&ioloop_timeval, NULL) < 0)
-		i_fatal("gettimeofday(): %m");
+	i_gettimeofday(&ioloop_timeval);
 
 	diff_usecs = timeval_diff_usecs(&ioloop_timeval, &tv_old);
 	if (unlikely(diff_usecs < 0)) {
@@ -643,8 +640,7 @@ static void io_loop_handle_timeouts_real(struct ioloop *ioloop)
 		ioloop->time_moved_callback(&tv_old, &ioloop_timeval);
 		i_assert(ioloop == current_ioloop);
 		/* the callback may have slept, so check the time again. */
-		if (gettimeofday(&ioloop_timeval, NULL) < 0)
-			i_fatal("gettimeofday(): %m");
+		i_gettimeofday(&ioloop_timeval);
 	} else {
 		diff_usecs = timeval_diff_usecs(&ioloop->next_max_time,
 						&ioloop_timeval);
@@ -803,8 +799,7 @@ bool io_loop_is_running(struct ioloop *ioloop)
 
 void io_loop_time_refresh(void)
 {
-	if (gettimeofday(&ioloop_timeval, NULL) < 0)
-		i_fatal("gettimeofday(): %m");
+	i_gettimeofday(&ioloop_timeval);
 	ioloop_time = ioloop_timeval.tv_sec;
 }
 
@@ -818,8 +813,7 @@ struct ioloop *io_loop_create(void)
 	}
 
 	/* initialize time */
-	if (gettimeofday(&ioloop_timeval, NULL) < 0)
-		i_fatal("gettimeofday(): %m");
+	i_gettimeofday(&ioloop_timeval);
 	ioloop_time = ioloop_timeval.tv_sec;
 
         ioloop = i_new(struct ioloop, 1);
@@ -846,6 +840,12 @@ void io_loop_destroy(struct ioloop **_ioloop)
 
 	/* ->prev won't work unless loops are destroyed in create order */
         i_assert(ioloop == current_ioloop);
+	if (array_is_created(&io_destroy_callbacks)) {
+		io_destroy_callback_t *const *callbackp;
+		array_foreach(&io_destroy_callbacks, callbackp)
+			(*callbackp)(current_ioloop);
+	}
+
 	io_loop_set_current(current_ioloop->prev);
 
 	if (ioloop->notify_handler_context != NULL)
@@ -940,6 +940,11 @@ static void io_switch_callbacks_free(void)
 	array_free(&io_switch_callbacks);
 }
 
+static void io_destroy_callbacks_free(void)
+{
+	array_free(&io_destroy_callbacks);
+}
+
 void io_loop_set_current(struct ioloop *ioloop)
 {
 	io_switch_callback_t *const *callbackp;
@@ -982,6 +987,30 @@ void io_loop_remove_switch_callback(io_switch_callback_t *callback)
 		if (*callbackp == callback) {
 			idx = array_foreach_idx(&io_switch_callbacks, callbackp);
 			array_delete(&io_switch_callbacks, idx, 1);
+			return;
+		}
+	}
+	i_unreached();
+}
+
+void io_loop_add_destroy_callback(io_destroy_callback_t *callback)
+{
+	if (!array_is_created(&io_destroy_callbacks)) {
+		i_array_init(&io_destroy_callbacks, 4);
+		lib_atexit_priority(io_destroy_callbacks_free, LIB_ATEXIT_PRIORITY_LOW);
+	}
+	array_push_back(&io_destroy_callbacks, &callback);
+}
+
+void io_loop_remove_destroy_callback(io_destroy_callback_t *callback)
+{
+	io_destroy_callback_t *const *callbackp;
+	unsigned int idx;
+
+	array_foreach(&io_destroy_callbacks, callbackp) {
+		if (*callbackp == callback) {
+			idx = array_foreach_idx(&io_destroy_callbacks, callbackp);
+			array_delete(&io_destroy_callbacks, idx, 1);
 			return;
 		}
 	}

@@ -98,7 +98,7 @@ void smtp_server_transaction_free(struct smtp_server_transaction **_trans)
 
 	if (!trans->finished) {
 		struct event_passthrough *e =
-			e = event_create_passthrough(trans->event)->
+			event_create_passthrough(trans->event)->
 			set_name("smtp_server_transaction_finished")->
 			add_int("recipients", rcpts_total)->
 			add_int("recipients_denied", rcpts_failed)->
@@ -130,7 +130,7 @@ smtp_server_transaction_find_rcpt_duplicate(
 		if (drcpt == rcpt)
 			continue;
 		if (smtp_address_equals(drcpt->path, rcpt->path) &&
-		    smtp_params_rcpt_equals(&drcpt->params, &rcpt->params))
+		    smtp_params_rcpt_equal(&drcpt->params, &rcpt->params))
 			return drcpt;
 	}
 	return NULL;

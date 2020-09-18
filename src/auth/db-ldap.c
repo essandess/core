@@ -1226,10 +1226,8 @@ int db_ldap_connect(struct ldap_connection *conn)
 	if (conn->conn_state != LDAP_CONN_STATE_DISCONNECTED)
 		return 0;
 
-	if (debug) {
-		if (gettimeofday(&start, NULL) < 0)
-			i_zero(&start);
-	}
+	if (debug)
+		i_gettimeofday(&start);
 	i_assert(conn->pending_count == 0);
 
 	if (conn->delayed_connect) {
@@ -1262,10 +1260,9 @@ int db_ldap_connect(struct ldap_connection *conn)
 		return -1;
 
 	if (debug) {
-		if (gettimeofday(&end, NULL) == 0) {
-			int msecs = timeval_diff_msecs(&end, &start);
-			i_debug("LDAP initialization took %d msecs", msecs);
-		}
+		i_gettimeofday(&end);
+		int msecs = timeval_diff_msecs(&end, &start);
+		i_debug("LDAP initialization took %d msecs", msecs);
 	}
 
 	db_ldap_get_fd(conn);
@@ -1476,8 +1473,8 @@ db_ldap_value_get_var_expand_table(struct auth_request *auth_request,
 	struct var_expand_table *table;
 	unsigned int count = 1;
 
-	table = auth_request_get_var_expand_table_full(auth_request, NULL,
-						       &count);
+	table = auth_request_get_var_expand_table_full(auth_request,
+			auth_request->fields.user, NULL, &count);
 	table[0].key = '$';
 	table[0].value = ldap_value;
 	return table;
@@ -1595,7 +1592,7 @@ db_ldap_result_iterate_init_full(struct ldap_connection *conn,
 	ctx->iter_dn_values = iter_dn_values;
 	hash_table_create(&ctx->ldap_attrs, pool, 0, strcase_hash, strcasecmp);
 	ctx->var = str_new(ctx->pool, 256);
-	if (ctx->ldap_request->auth_request->debug)
+	if (event_want_debug(ctx->ldap_request->auth_request->event))
 		ctx->debug = t_str_new(256);
 	ctx->ldap_msg = res;
 	ctx->ld = conn->ld;
@@ -1673,10 +1670,9 @@ db_ldap_field_ptr_expand(const char *data, void *context,
 {
 	struct db_ldap_result_iterate_context *ctx = context;
 	const char *field_name, *suffix;
-	int ret;
 
 	suffix = strchr(t_strcut(data, ':'), '@');
-	if ((ret = db_ldap_field_expand(data, ctx, &field_name, error_r)) <= 0)
+	if (db_ldap_field_expand(data, ctx, &field_name, error_r) <= 0)
 		i_unreached();
 	if (field_name[0] == '\0') {
 		*value_r = "";

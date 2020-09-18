@@ -72,6 +72,7 @@ pkginc_libdir=$(pkgincludedir)
 pkginc_lib_HEADERS = $(headers)
 
 test_programs = \
+	test-smtp-syntax \
 	test-smtp-address \
 	test-smtp-params \
 	test-smtp-reply \
@@ -96,6 +97,7 @@ test_libs = \
 	../lib-mail/libmail.la \
 	../lib-charset/libcharset.la \
 	../lib-master/libmaster.la \
+	../lib-auth/libauth.la \
 	../lib-ssl-iostream/libssl_iostream.la \
 	../lib-settings/libsettings.la \
 	../lib-sasl/libsasl.la \
@@ -110,6 +112,7 @@ test_deps = \
 	../lib-mail/libmail.la \
 	../lib-charset/libcharset.la \
 	../lib-master/libmaster.la \
+	../lib-auth/libauth.la \
 	../lib-ssl-iostream/libssl_iostream.la \
 	../lib-settings/libsettings.la \
 	../lib-sasl/libsasl.la \
@@ -120,6 +123,10 @@ test_libs_ssl=
 if BUILD_OPENSSL
 test_libs_ssl += ../lib-ssl-iostream/libssl_iostream_openssl.la
 endif
+
+test_smtp_syntax_SOURCES = test-smtp-syntax.c
+test_smtp_syntax_LDADD = $(test_libs)
+test_smtp_syntax_DEPENDENCIES = $(test_deps)
 
 test_smtp_address_SOURCES = test-smtp-address.c
 test_smtp_address_LDFLAGS = -export-dynamic
@@ -153,7 +160,7 @@ test_smtp_submit_DEPENDENCIES = $(test_deps)
 
 test_smtp_client_errors_SOURCES = test-smtp-client-errors.c
 test_smtp_client_errors_LDFLAGS = -export-dynamic
-test_smtp_client_errors_LDADD = $(test_libs)
+test_smtp_client_errors_LDADD = $(test_libs) $(test_libs_ssl)
 test_smtp_client_errors_DEPENDENCIES = $(test_deps)
 
 test_smtp_server_errors_SOURCES = test-smtp-server-errors.c

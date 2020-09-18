@@ -40,6 +40,8 @@ static void snippet_add_content(struct snippet_context *ctx,
 				size_t *count_r)
 {
 	i_assert(target != NULL);
+	if (size == 0)
+		return;
 	if (size >= 3 &&
 	     ((data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF) ||
 	      (data[0] == 0xBF && data[1] == 0xBB && data[2] == 0xEF))) {
@@ -58,15 +60,18 @@ static void snippet_add_content(struct snippet_context *ctx,
 			ctx->state = SNIPPET_STATE_NEWLINE;
 		return;
 	}
-	if (ctx->add_whitespace) {
-		str_append_c(target->snippet, ' ');
-		ctx->add_whitespace = FALSE;
-		if (target->chars_left-- == 0)
-			return;
-	}
 	if (target->chars_left == 0)
 		return;
 	target->chars_left--;
+	if (ctx->add_whitespace) {
+		if (target->chars_left == 0) {
+			/* don't add a trailing whitespace */
+			return;
+		}
+		str_append_c(target->snippet, ' ');
+		ctx->add_whitespace = FALSE;
+		target->chars_left--;
+	}
 	*count_r = uni_utf8_char_bytes(data[0]);
 	i_assert(*count_r <= size);
 	str_append_data(target->snippet, data, *count_r);
@@ -76,7 +81,7 @@ static bool snippet_generate(struct snippet_context *ctx,
 			     const unsigned char *data, size_t size)
 {
 	size_t i, count;
-	struct snippet_data *target = &ctx->snippet;
+	struct snippet_data *target;
 
 	if (ctx->html2text != NULL) {
 		buffer_set_used_size(ctx->plain_output, 0);
@@ -85,6 +90,11 @@ static bool snippet_generate(struct snippet_context *ctx,
 		data = ctx->plain_output->data;
 		size = ctx->plain_output->used;
 	}
+
+	if (ctx->state == SNIPPET_STATE_QUOTED)
+		target = &ctx->quoted_snippet;
+	else
+		target = &ctx->snippet;
 
 	/* message-decoder should feed us only valid and complete
 	   UTF-8 input */
@@ -127,6 +137,7 @@ int message_snippet_generate(struct istream *input,
 			     unsigned int max_snippet_chars,
 			     string_t *snippet)
 {
+	const struct message_parser_settings parser_set = { .flags = 0 };
 	struct message_parser_ctx *parser;
 	struct message_part *parts;
 	struct message_decoder_context *decoder;
@@ -140,8 +151,8 @@ int message_snippet_generate(struct istream *input,
 	ctx.snippet.snippet = str_new(pool, max_snippet_chars);
 	ctx.snippet.chars_left = max_snippet_chars;
 	ctx.quoted_snippet.snippet = str_new(pool, max_snippet_chars);
-	ctx.quoted_snippet.chars_left = max_snippet_chars;
-	parser = message_parser_init(pool_datastack_create(), input, 0, 0);
+	ctx.quoted_snippet.chars_left = max_snippet_chars - 1; /* -1 for '>' */
+	parser = message_parser_init(pool_datastack_create(), input, &parser_set);
 	decoder = message_decoder_init(NULL, 0);
 	while ((ret = message_parser_parse_next_block(parser, &raw_block)) > 0) {
 		if (!message_decoder_decode_next_block(decoder, &raw_block, &block))

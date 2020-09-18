@@ -3,6 +3,15 @@
 
 #include <sys/time.h> /* for struct timeval */
 
+/* Same as gettimeofday(), but call i_fatal() if the call fails. */
+void i_gettimeofday(struct timeval *tv_r);
+/* Return nanoseconds since UNIX epoch (1970-01-01). */
+uint64_t i_nanoseconds(void);
+/* Return microseconds since UNIX epoch (1970-01-01). */
+static inline uint64_t i_microseconds(void) {
+	return i_nanoseconds() / 1000;
+}
+
 /* Returns -1 if tv1<tv2, 1 if tv1>tv2, 0 if they're equal. */
 int timeval_cmp(const struct timeval *tv1, const struct timeval *tv2);
 /* Same as timeval_cmp, but tv->usecs must differ by at least usec_margin */
@@ -67,5 +76,12 @@ time_t time_to_local_day_start(time_t t);
 const char *t_strftime(const char *fmt, const struct tm *tm) ATTR_STRFTIME(1);
 const char *t_strflocaltime(const char *fmt, time_t t) ATTR_STRFTIME(1);
 const char *t_strfgmtime(const char *fmt, time_t t) ATTR_STRFTIME(1);
+
+/* Parse string as <unix timestamp>[.<usecs>] into timeval. <usecs> must not
+   have higher precision time, i.e. a maximum of 6 digits is allowed. Note that
+   ".1" is handled as ".1000000" so the string should have been written using
+   "%06u" printf format. */
+int str_to_timeval(const char *str, struct timeval *tv_r)
+	ATTR_WARN_UNUSED_RESULT;
 
 #endif

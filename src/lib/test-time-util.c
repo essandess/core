@@ -335,6 +335,63 @@ static void test_strftime_fixed(void)
 	test_end();
 }
 
+static void test_micro_nanoseconds(void)
+{
+	uint64_t secs, usecs, nsecs;
+
+	test_begin("i_microseconds() and i_nanoseconds()");
+
+	secs = time(NULL);
+	usecs = i_microseconds();
+	nsecs = i_nanoseconds();
+
+	/* Assume max 1 seconds time difference between the calls. That should
+	   be more than enough, while still not failing if there are temporary
+	   hangs when running in heavily loaded systems. */
+	test_assert(usecs/1000000 - secs <= 1);
+	test_assert(nsecs/1000 - usecs <= 1000000);
+
+	test_end();
+}
+
+static void test_str_to_timeval(void)
+{
+	struct {
+		const char *str;
+		unsigned int tv_sec, tv_usec;
+	} tests[] = {
+		{ "0", 0, 0 },
+		{ "0.0", 0, 0 },
+		{ "0.000000", 0, 0 },
+		{ "0.1", 0, 100000 },
+		{ "0.100000", 0, 100000 },
+		{ "0.000001", 0, 1 },
+		{ "0.100000", 0, 100000 },
+		{ "2147483647", 2147483647, 0 },
+		{ "2147483647.999999", 2147483647, 999999 },
+	};
+	const char *test_failures[] = {
+		"",
+		"0.",
+		"0.0000000",
+		"1234.-1",
+		"1234.x",
+		"x",
+		"x.100",
+	};
+	struct timeval tv;
+
+	test_begin("str_to_timeval");
+	for (unsigned int i = 0; i < N_ELEMENTS(tests); i++) {
+		test_assert_idx(str_to_timeval(tests[i].str, &tv) == 0, i);
+		test_assert_idx(tv.tv_sec == tests[i].tv_sec, i);
+		test_assert_idx(tv.tv_usec == tests[i].tv_usec, i);
+	}
+	for (unsigned int i = 0; i < N_ELEMENTS(test_failures); i++)
+		test_assert_idx(str_to_timeval(test_failures[i], &tv) == -1, i);
+	test_end();
+}
+
 void test_time_util(void)
 {
 	test_timeval_cmp();
@@ -343,4 +400,6 @@ void test_time_util(void)
 	test_time_to_local_day_start();
 	test_strftime_now();
 	test_strftime_fixed();
+	test_micro_nanoseconds();
+	test_str_to_timeval();
 }

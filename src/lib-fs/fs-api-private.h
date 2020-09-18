@@ -11,6 +11,10 @@
 #define FS_EVENT_FIELD_FILE "lib-fs#file"
 #define FS_EVENT_FIELD_ITER "lib-fs#iter"
 
+enum fs_get_metadata_flags {
+	FS_GET_METADATA_FLAG_LOADED_ONLY = BIT(0),
+};
+
 struct fs_api_module_register {
 	unsigned int id;
 };
@@ -26,6 +30,7 @@ struct fs_vfuncs {
 	int (*init)(struct fs *fs, const char *args,
 		    const struct fs_settings *set, const char **error_r);
 	void (*deinit)(struct fs *fs);
+	void (*free)(struct fs *fs);
 
 	enum fs_properties (*get_properties)(struct fs *fs);
 
@@ -44,6 +49,7 @@ struct fs_vfuncs {
 	void (*set_metadata)(struct fs_file *file, const char *key,
 			     const char *value);
 	int (*get_metadata)(struct fs_file *file,
+			    enum fs_get_metadata_flags flags,
 			    const ARRAY_TYPE(fs_metadata) **metadata_r);
 
 	bool (*prefetch)(struct fs_file *file, uoff_t length);
@@ -168,8 +174,11 @@ extern const struct fs fs_class_test;
 
 void fs_class_register(const struct fs *fs_class);
 
-/* Event must be fs_file or fs_iter events */
-void fs_set_error(struct event *event, const char *fmt, ...) ATTR_FORMAT(2, 3);
+/* Event must be fs_file or fs_iter events. Set errno from err. */
+void fs_set_error(struct event *event, int err,
+		  const char *fmt, ...) ATTR_FORMAT(3, 4);
+/* Like fs_set_error(), but use the existing errno. */
+void fs_set_error_errno(struct event *event, const char *fmt, ...) ATTR_FORMAT(2, 3);
 void fs_file_set_error_async(struct fs_file *file);
 
 ssize_t fs_read_via_stream(struct fs_file *file, void *buf, size_t size);
@@ -178,6 +187,9 @@ void fs_metadata_init(struct fs_file *file);
 void fs_metadata_init_or_clear(struct fs_file *file);
 void fs_default_set_metadata(struct fs_file *file,
 			     const char *key, const char *value);
+int fs_get_metadata_full(struct fs_file *file,
+			 enum fs_get_metadata_flags flags,
+			 const ARRAY_TYPE(fs_metadata) **metadata_r);
 const char *fs_metadata_find(const ARRAY_TYPE(fs_metadata) *metadata,
 			     const char *key);
 int fs_default_copy(struct fs_file *src, struct fs_file *dest);

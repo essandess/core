@@ -6,6 +6,7 @@
 #include "ostream.h"
 #include "ioloop.h"
 #include "str.h"
+#include "str-sanitize.h"
 #include "mkdir-parents.h"
 #include "dict.h"
 #include "mail-index-alloc-cache.h"
@@ -161,7 +162,8 @@ index_mailbox_alloc_index(struct mailbox *box, struct mail_index **index_r)
 	    mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_INDEX,
 				&index_dir) <= 0)
 		index_dir = NULL;
-	*index_r = mail_index_alloc_cache_get(box->storage->event,
+	/* Note that this may cause box->event to live longer than box */
+	*index_r = mail_index_alloc_cache_get(box->event,
 					      mailbox_path, index_dir,
 					      box->index_prefix);
 	return 0;
@@ -272,10 +274,11 @@ int index_storage_mailbox_alloc_index(struct mailbox *box)
 		.cache = {
 			.unaccessed_field_drop_secs = set->mail_cache_unaccessed_field_drop,
 			.record_max_size = set->mail_cache_record_max_size,
-			.compress_min_size = set->mail_cache_compress_min_size,
-			.compress_delete_percentage = set->mail_cache_compress_delete_percentage,
-			.compress_continued_percentage = set->mail_cache_compress_continued_percentage,
-			.compress_header_continue_count = set->mail_cache_compress_header_continue_count,
+			.max_size = set->mail_cache_max_size,
+			.purge_min_size = set->mail_cache_purge_min_size,
+			.purge_delete_percentage = set->mail_cache_purge_delete_percentage,
+			.purge_continued_percentage = set->mail_cache_purge_continued_percentage,
+			.purge_header_continue_count = set->mail_cache_purge_header_continue_count,
 		},
 	};
 	mail_index_set_optimization_settings(box->index, &optimization_set);
@@ -389,7 +392,7 @@ void index_storage_mailbox_alloc(struct mailbox *box, const char *vname,
 	event_add_category(box->event, &event_category_mailbox);
 	event_add_str(box->event, "mailbox", box->vname);
 	event_set_append_log_prefix(box->event,
-		t_strdup_printf("Mailbox %s: ", box->vname));
+		t_strdup_printf("Mailbox %s: ", str_sanitize(box->vname, 128)));
 
 	p_array_init(&box->search_results, box->pool, 16);
 	array_create(&box->module_contexts,

@@ -279,7 +279,7 @@ int net_connect_unix(const char *path)
 #ifdef ENAMETOOLONG
 		errno = ENAMETOOLONG;
 #else
-		errno = EINVAL;
+		errno = EOVERFLOW;
 #endif
 		return -1;
 	}
@@ -318,8 +318,7 @@ int net_connect_unix_with_retries(const char *path, unsigned int msecs)
 	struct timeval start, now;
 	int fd;
 
-	if (gettimeofday(&start, NULL) < 0)
-		i_panic("gettimeofday() failed: %m");
+	i_gettimeofday(&start);
 
 	do {
 		fd = net_connect_unix(path);
@@ -328,8 +327,7 @@ int net_connect_unix_with_retries(const char *path, unsigned int msecs)
 
 		/* busy. wait for a while. */
 		usleep(i_rand_minmax(1, 10) * 10000);
-		if (gettimeofday(&now, NULL) < 0)
-			i_panic("gettimeofday() failed: %m");
+		i_gettimeofday(&now);
 	} while (timeval_diff_msecs(&now, &start) < (int)msecs);
 	return fd;
 }
@@ -515,7 +513,11 @@ int net_listen_unix(const char *path, int backlog)
 	sa.un.sun_family = AF_UNIX;
 	if (i_strocpy(sa.un.sun_path, path, sizeof(sa.un.sun_path)) < 0) {
 		/* too long path */
+#ifdef ENAMETOOLONG
+		errno = ENAMETOOLONG;
+#else
 		errno = EOVERFLOW;
+#endif
 		return -1;
 	}
 

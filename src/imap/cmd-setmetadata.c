@@ -129,31 +129,33 @@ cmd_setmetadata_entry_read_stream(struct imap_setmetadata_context *ctx)
 
 	while ((ret = i_stream_read_more(ctx->input, &data, &size)) > 0)
 		i_stream_skip(ctx->input, size);
-	if (ctx->input->v_offset == ctx->entry_value_len) {
-		/* finished reading the value */
-		i_stream_seek(ctx->input, 0);
+	if (ret == 0)
+		return 0;
 
-		if (ctx->failed) {
-			i_stream_unref(&ctx->input);
-			return 1;
-		}
+	if (ctx->input->v_offset != ctx->entry_value_len) {
+		/* client disconnected */
+		i_assert(ctx->input->eof);
+		return -1;
+	}
 
-		i_zero(&value);
-		value.value_stream = ctx->input;
-		if (imap_metadata_set(ctx->trans, ctx->entry_name, &value) < 0) {
-			/* delay reporting the failure so we'll finish
-			   reading the command input */
-			ctx->storage_failure = TRUE;
-			ctx->failed = TRUE;
-		}
+	/* finished reading the value */
+	i_stream_seek(ctx->input, 0);
+
+	if (ctx->failed) {
 		i_stream_unref(&ctx->input);
 		return 1;
 	}
-	if (ctx->input->eof) {
-		/* client disconnected */
-		return -1;
+
+	i_zero(&value);
+	value.value_stream = ctx->input;
+	if (imap_metadata_set(ctx->trans, ctx->entry_name, &value) < 0) {
+		/* delay reporting the failure so we'll finish
+		   reading the command input */
+		ctx->storage_failure = TRUE;
+		ctx->failed = TRUE;
 	}
-	return 0;
+	i_stream_unref(&ctx->input);
+	return 1;
 }
 
 static int
@@ -312,7 +314,8 @@ cmd_setmetadata_mailbox(struct imap_setmetadata_context *ctx,
 	    mailbox_equals(client->mailbox, ns, mailbox))
 		ctx->box = client->mailbox;
 	else {
-		ctx->box = mailbox_alloc(ns->list, mailbox, 0);
+		ctx->box = mailbox_alloc(ns->list, mailbox,
+					 MAILBOX_FLAG_ATTRIBUTE_SESSION);
 		mailbox_set_reason(ctx->box, "SETMETADATA");
 		if (mailbox_open(ctx->box) < 0) {
 			client_send_box_error(cmd, ctx->box);

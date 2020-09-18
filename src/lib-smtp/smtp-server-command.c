@@ -11,9 +11,9 @@
  * Command registry
  */
 
-void smtp_server_command_register(struct smtp_server *server,
-	const char *name, smtp_server_cmd_start_func_t *func,
-	enum smtp_server_command_flags flags)
+void smtp_server_command_register(struct smtp_server *server, const char *name,
+				  smtp_server_cmd_start_func_t *func,
+				  enum smtp_server_command_flags flags)
 {
 	struct smtp_server_command_reg cmd;
 
@@ -75,50 +75,46 @@ void smtp_server_commands_init(struct smtp_server *server)
 
 	switch (server->set.protocol) {
 	case SMTP_PROTOCOL_SMTP:
-		smtp_server_command_register(server,
-			"EHLO", smtp_server_cmd_ehlo,
+		smtp_server_command_register(
+			server,	"EHLO", smtp_server_cmd_ehlo,
 			SMTP_SERVER_CMD_FLAG_PRETLS |
 			SMTP_SERVER_CMD_FLAG_PREAUTH);
-		smtp_server_command_register(server,
-			"HELO", smtp_server_cmd_helo,
+		smtp_server_command_register(
+			server, "HELO", smtp_server_cmd_helo,
 			SMTP_SERVER_CMD_FLAG_PREAUTH);
 		break;
 	case SMTP_PROTOCOL_LMTP:
-		smtp_server_command_register(server,
-			"LHLO", smtp_server_cmd_ehlo,
+		smtp_server_command_register(
+			server, "LHLO", smtp_server_cmd_ehlo,
 			SMTP_SERVER_CMD_FLAG_PRETLS |
 			SMTP_SERVER_CMD_FLAG_PREAUTH);
 		break;
 	}
 
-	smtp_server_command_register(server,
-		"AUTH", smtp_server_cmd_auth,
+	smtp_server_command_register(
+		server, "AUTH", smtp_server_cmd_auth,
 		SMTP_SERVER_CMD_FLAG_PREAUTH);
-	smtp_server_command_register(server,
-		"STARTTLS", smtp_server_cmd_starttls,
+	smtp_server_command_register(
+		server, "STARTTLS", smtp_server_cmd_starttls,
 		SMTP_SERVER_CMD_FLAG_PRETLS | SMTP_SERVER_CMD_FLAG_PREAUTH);
-	smtp_server_command_register(server,
-		"MAIL", smtp_server_cmd_mail, 0);
-	smtp_server_command_register(server,
-		"RCPT", smtp_server_cmd_rcpt, 0);
-	smtp_server_command_register(server,
-		"DATA", smtp_server_cmd_data, 0);
-	smtp_server_command_register(server,
-		"BDAT", smtp_server_cmd_bdat, 0);
-	smtp_server_command_register(server,
-		"RSET", smtp_server_cmd_rset,
+	smtp_server_command_register(
+		server, "MAIL", smtp_server_cmd_mail, 0);
+	smtp_server_command_register(server, "RCPT", smtp_server_cmd_rcpt, 0);
+	smtp_server_command_register(server, "DATA", smtp_server_cmd_data, 0);
+	smtp_server_command_register(server, "BDAT", smtp_server_cmd_bdat, 0);
+	smtp_server_command_register(
+		server, "RSET", smtp_server_cmd_rset,
 		SMTP_SERVER_CMD_FLAG_PREAUTH);
-	smtp_server_command_register(server,
-		"VRFY", smtp_server_cmd_vrfy, 0);
-	smtp_server_command_register(server,
-		"NOOP", smtp_server_cmd_noop,
+	smtp_server_command_register(server, "VRFY", smtp_server_cmd_vrfy, 0);
+	smtp_server_command_register(
+		server, "NOOP", smtp_server_cmd_noop,
 		SMTP_SERVER_CMD_FLAG_PRETLS | SMTP_SERVER_CMD_FLAG_PREAUTH);
-	smtp_server_command_register(server,
-		"QUIT", smtp_server_cmd_quit,
+	smtp_server_command_register(
+		server, "QUIT", smtp_server_cmd_quit,
 		SMTP_SERVER_CMD_FLAG_PRETLS | SMTP_SERVER_CMD_FLAG_PREAUTH);
 
-	smtp_server_command_register(server,
-		"XCLIENT", smtp_server_cmd_xclient,
+	smtp_server_command_register(
+		server, "XCLIENT", smtp_server_cmd_xclient,
 		SMTP_SERVER_CMD_FLAG_PREAUTH);
 }
 
@@ -126,14 +122,18 @@ void smtp_server_commands_init(struct smtp_server *server)
  *
  */
 
-static void
-smtp_server_command_update_event(struct smtp_server_command *cmd)
+static void smtp_server_command_update_event(struct smtp_server_command *cmd)
 {
 	struct event *event = cmd->context.event;
 	const char *label = (cmd->context.name == NULL ?
-			    "[INVALID]" : cmd->context.name);
+			     "[unknown]" :
+			     t_str_ucase(cmd->context.name));
 
-	event_add_str(event, "cmd_name", cmd->context.name);
+	if (cmd->reg != NULL)
+		event_add_str(event, "cmd_name", cmd->reg->name);
+	else
+		event_add_str(event, "cmd_name", "unknown");
+	event_add_str(event, "cmd_input_name", cmd->context.name);
 	event_set_append_log_prefix(event,
 				    t_strdup_printf("command %s: ", label));
 }
@@ -179,14 +179,15 @@ smtp_server_command_new_invalid(struct smtp_server_connection *conn)
 
 struct smtp_server_command *
 smtp_server_command_new(struct smtp_server_connection *conn,
-			const char *name, const char *params)
+			const char *name)
 {
 	struct smtp_server *server = conn->server;
-	const struct smtp_server_command_reg *cmd_reg;
 	struct smtp_server_command *cmd;
 
 	cmd = smtp_server_command_alloc(conn);
 	cmd->context.name = p_strdup(cmd->context.pool, name);
+	cmd->reg = smtp_server_command_find(server, name);
+
 	smtp_server_command_update_event(cmd);
 
 	struct event_passthrough *e =
@@ -194,7 +195,15 @@ smtp_server_command_new(struct smtp_server_connection *conn,
 		set_name("smtp_server_command_started");
 	e_debug(e->event(), "New command");
 
-	if ((cmd_reg=smtp_server_command_find(server, name)) == NULL) {
+	return cmd;
+}
+
+void smtp_server_command_execute(struct smtp_server_command *cmd,
+				 const char *params)
+{
+	struct smtp_server_connection *conn = cmd->context.conn;
+
+	if (cmd->reg == NULL) {
 		/* RFC 5321, Section 4.2.4: Reply Code 502
 
 		   Questions have been raised as to when reply code 502 (Command
@@ -207,7 +216,7 @@ smtp_server_command_new(struct smtp_server_connection *conn,
 			500, "5.5.1", "Unknown command");
 
 	} else if (!conn->ssl_secured && conn->set.tls_required &&
-		(cmd_reg->flags & SMTP_SERVER_CMD_FLAG_PRETLS) == 0) {
+		   (cmd->reg->flags & SMTP_SERVER_CMD_FLAG_PRETLS) == 0) {
 		/* RFC 3207, Section 4:
 
 		   A SMTP server that is not publicly referenced may choose to
@@ -226,7 +235,7 @@ smtp_server_command_new(struct smtp_server_connection *conn,
 			530, "5.7.0", "TLS required.");
 
 	} else if (!conn->authenticated && !conn->set.auth_optional &&
-		(cmd_reg->flags & SMTP_SERVER_CMD_FLAG_PREAUTH) == 0) {
+		   (cmd->reg->flags & SMTP_SERVER_CMD_FLAG_PREAUTH) == 0) {
 		/* RFC 4954, Section 6: Status Codes
 
 		   530 5.7.0  Authentication required
@@ -242,16 +251,14 @@ smtp_server_command_new(struct smtp_server_connection *conn,
 	} else {
 		struct smtp_server_command *tmp_cmd = cmd;
 
-		i_assert(cmd_reg->func != NULL);
+		i_assert(cmd->reg->func != NULL);
 		smtp_server_command_ref(tmp_cmd);
-		tmp_cmd->reg = cmd_reg;
-		cmd_reg->func(&tmp_cmd->context, params);
+		cmd->reg->func(&tmp_cmd->context, params);
 		if (tmp_cmd->state == SMTP_SERVER_COMMAND_STATE_NEW)
 			tmp_cmd->state = SMTP_SERVER_COMMAND_STATE_PROCESSING;
 		if (!smtp_server_command_unref(&tmp_cmd))
 			cmd = NULL;
 	}
-	return cmd;
 }
 
 void smtp_server_command_ref(struct smtp_server_command *cmd)
@@ -293,7 +300,7 @@ bool smtp_server_command_unref(struct smtp_server_command **_cmd)
 		conn->command_queue_count--;
 	}
 
-	/* execute hooks */
+	/* Execute hooks */
 	if (!smtp_server_command_call_hooks(
 		&cmd, SMTP_SERVER_COMMAND_HOOK_DESTROY, TRUE))
 		i_unreached();
@@ -309,7 +316,7 @@ void smtp_server_command_abort(struct smtp_server_command **_cmd)
 	struct smtp_server_command *cmd = *_cmd;
 	struct smtp_server_connection *conn = cmd->context.conn;
 
-	/* preemptively remove command from queue (references may still exist)
+	/* Preemptively remove command from queue (references may still exist)
 	 */
 	if (cmd->state >= SMTP_SERVER_COMMAND_STATE_FINISHED) {
 		e_debug(cmd->context.event, "Abort");
@@ -344,7 +351,7 @@ void smtp_server_command_add_hook(struct smtp_server_command *cmd,
 
 	hook = cmd->hooks_head;
 	while (hook != NULL) {
-		/* no double registrations */
+		/* No double registrations */
 		i_assert(hook->type != type || hook->func != func);
 
 		hook = hook->next;
@@ -389,8 +396,11 @@ bool smtp_server_command_call_hooks(struct smtp_server_command **_cmd,
 	struct smtp_server_command *cmd = *_cmd;
 	struct smtp_server_command_hook *hook;
 
-	if (type != SMTP_SERVER_COMMAND_HOOK_DESTROY)
+	if (type != SMTP_SERVER_COMMAND_HOOK_DESTROY) {
+		if (cmd->state >= SMTP_SERVER_COMMAND_STATE_FINISHED)
+			return FALSE;
 		smtp_server_command_ref(cmd);
+	}
 
 	hook = cmd->hooks_head;
 	while (hook != NULL) {
@@ -449,21 +459,25 @@ smtp_server_command_get_reply_count(struct smtp_server_command *cmd)
 	return cmd->replies_expected;
 }
 
-void smtp_server_command_ready_to_reply(struct smtp_server_command *cmd)
-{
-	cmd->state = SMTP_SERVER_COMMAND_STATE_READY_TO_REPLY;
-	e_debug(cmd->context.event, "Ready to reply");
-	smtp_server_connection_trigger_output(cmd->context.conn);
-}
-
 bool smtp_server_command_next_to_reply(struct smtp_server_command **_cmd)
 {
 	struct smtp_server_command *cmd = *_cmd;
 
 	e_debug(cmd->context.event, "Next to reply");
 
-	return smtp_server_command_call_hooks(
-		_cmd, SMTP_SERVER_COMMAND_HOOK_NEXT, TRUE);
+	if (!smtp_server_command_call_hooks(
+		_cmd, SMTP_SERVER_COMMAND_HOOK_NEXT, TRUE))
+		return FALSE;
+
+	smtp_server_command_remove_hooks(cmd, SMTP_SERVER_COMMAND_HOOK_NEXT);
+	return TRUE;
+}
+
+void smtp_server_command_ready_to_reply(struct smtp_server_command *cmd)
+{
+	cmd->state = SMTP_SERVER_COMMAND_STATE_READY_TO_REPLY;
+	e_debug(cmd->context.event, "Ready to reply");
+	smtp_server_connection_trigger_output(cmd->context.conn);
 }
 
 static bool
@@ -509,7 +523,7 @@ smtp_server_command_handle_reply(struct smtp_server_command *cmd)
 	if (!smtp_server_command_replied(&cmd))
 		return smtp_server_connection_unref(&conn);
 
-	/* submit reply */
+	/* Submit reply */
 	switch (cmd->state) {
 	case SMTP_SERVER_COMMAND_STATE_NEW:
 	case SMTP_SERVER_COMMAND_STATE_PROCESSING:
@@ -558,9 +572,7 @@ void smtp_server_command_submit_reply(struct smtp_server_command *cmd)
 
 	i_assert(submitted == cmd->replies_submitted);
 
-	smtp_server_command_remove_hooks(cmd, SMTP_SERVER_COMMAND_HOOK_NEXT);
-
-	/* limit number of consecutive bad commands */
+	/* Limit number of consecutive bad commands */
 	if (is_bad)
 		conn->bad_counter++;
 	else if (cmd->replies_submitted == cmd->replies_expected)
@@ -614,7 +626,7 @@ bool smtp_server_command_reply_is_forwarded(struct smtp_server_command *cmd)
 
 struct smtp_server_reply *
 smtp_server_command_get_reply(struct smtp_server_command *cmd,
-	unsigned int idx)
+			      unsigned int idx)
 {
 	struct smtp_server_reply *reply;
 
@@ -630,7 +642,7 @@ smtp_server_command_get_reply(struct smtp_server_command *cmd,
 }
 
 bool smtp_server_command_reply_status_equals(struct smtp_server_command *cmd,
-	unsigned int status)
+					     unsigned int status)
 {
 	struct smtp_server_reply *reply;
 
@@ -727,8 +739,8 @@ void smtp_server_command_fail(struct smtp_server_command *cmd,
 				array_idx(&cmd->replies, i);
 			sent = reply->sent;
 		}
-	
-		/* send the same reply for all */
+
+		/* Send the same reply for all */
 		if (!sent) {
 			va_list args_copy;
 			VA_COPY(args_copy, args);
@@ -758,7 +770,8 @@ void smtp_server_command_input_unlock(struct smtp_server_cmd_ctx *cmd)
 	smtp_server_connection_input_resume(conn);
 }
 
-void smtp_server_command_input_capture(struct smtp_server_cmd_ctx *cmd,
+void smtp_server_command_input_capture(
+	struct smtp_server_cmd_ctx *cmd,
 	smtp_server_cmd_input_callback_t *callback)
 {
 	struct smtp_server_command *command = cmd->cmd;

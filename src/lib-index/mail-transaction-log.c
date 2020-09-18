@@ -231,22 +231,31 @@ void mail_transaction_logs_clean(struct mail_transaction_log *log)
 	i_assert(log->head == NULL || log->files != NULL);
 }
 
-bool mail_transaction_log_want_rotate(struct mail_transaction_log *log)
+bool mail_transaction_log_want_rotate(struct mail_transaction_log *log,
+				      const char **reason_r)
 {
 	struct mail_transaction_log_file *file = log->head;
 
-	if (file->need_rotate)
+	if (file->need_rotate != NULL) {
+		*reason_r = t_strdup(file->need_rotate);
 		return TRUE;
+	}
 
 	if (file->hdr.major_version < MAIL_TRANSACTION_LOG_MAJOR_VERSION ||
 	    (file->hdr.major_version == MAIL_TRANSACTION_LOG_MAJOR_VERSION &&
 	     file->hdr.minor_version < MAIL_TRANSACTION_LOG_MINOR_VERSION)) {
 		/* upgrade immediately to a new log file format */
+		*reason_r = t_strdup_printf(
+			".log file format version %u.%u is too old",
+			file->hdr.major_version, file->hdr.minor_version);
 		return TRUE;
 	}
 
 	if (file->sync_offset > log->index->optimization_set.log.max_size) {
 		/* file is too large, definitely rotate */
+		*reason_r = t_strdup_printf(
+			".log file size %"PRIuUOFF_T" > max_size %"PRIuUOFF_T,
+			file->sync_offset, log->index->optimization_set.log.max_size);
 		return TRUE;
 	}
 	if (file->sync_offset < log->index->optimization_set.log.min_size) {
@@ -254,13 +263,20 @@ bool mail_transaction_log_want_rotate(struct mail_transaction_log *log)
 		return FALSE;
 	}
 	/* rotate if the timestamp is old enough */
-	return file->hdr.create_stamp <
-		ioloop_time - log->index->optimization_set.log.min_age_secs;
+	if (file->hdr.create_stamp <
+	    ioloop_time - log->index->optimization_set.log.min_age_secs) {
+		*reason_r = t_strdup_printf(
+			".log create_stamp %u is older than %u secs",
+			file->hdr.create_stamp,
+			log->index->optimization_set.log.min_age_secs);
+		return TRUE;
+	}
+	return FALSE;
 }
 
 int mail_transaction_log_rotate(struct mail_transaction_log *log, bool reset)
 {
-	struct mail_transaction_log_file *file;
+	struct mail_transaction_log_file *file, *old_head;
 	const char *path = log->head->filepath;
 	struct stat st;
 	int ret;
@@ -304,15 +320,15 @@ int mail_transaction_log_rotate(struct mail_transaction_log *log, bool reset)
 		i_assert(file->locked);
 	}
 
-	if (--log->head->refcount == 0)
-		mail_transaction_logs_clean(log);
-	else {
-		/* the newly created log file is already locked */
-		mail_transaction_log_file_unlock(log->head,
-			!log->index->log_sync_locked ? "rotating" :
-			"rotating while syncing");
-	}
+	old_head = log->head;
 	mail_transaction_log_set_head(log, file);
+
+	/* the newly created log file is already locked */
+	mail_transaction_log_file_unlock(old_head,
+		!log->index->log_sync_locked ? "rotating" :
+		"rotating while syncing");
+	if (--old_head->refcount == 0)
+		mail_transaction_logs_clean(log);
 	return 0;
 }
 
@@ -368,9 +384,10 @@ mail_transaction_log_refresh(struct mail_transaction_log *log, bool nfs_flush,
 
 	i_assert(!file->locked);
 
-	if (--log->head->refcount == 0)
-		mail_transaction_logs_clean(log);
+	struct mail_transaction_log_file *old_head = log->head;
 	mail_transaction_log_set_head(log, file);
+	if (--old_head->refcount == 0)
+		mail_transaction_logs_clean(log);
 	*reason_r = "Log reopened";
 	return 0;
 }

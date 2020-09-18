@@ -11,6 +11,7 @@
 #include "strescape.h"
 #include "dsasl-client.h"
 #include "client.h"
+#include "smtp-syntax.h"
 #include "submission-login-settings.h"
 #include "submission-proxy.h"
 
@@ -20,36 +21,37 @@ static const char *submission_proxy_state_names[SUBMISSION_PROXY_STATE_COUNT] = 
 	"banner", "ehlo", "starttls", "tls-ehlo", "xclient", "authenticate"
 };
 
-static void proxy_free_password(struct client *client)
+static buffer_t *
+proxy_compose_xclient_forward(struct submission_client *client)
 {
-	if (client->proxy_password == NULL)
-		return;
+	const char *const *arg;
+	string_t *str;
 
-	safe_memset(client->proxy_password, 0, strlen(client->proxy_password));
-	i_free_and_null(client->proxy_password);
+	if (*client->common.auth_passdb_args == NULL)
+		return NULL;
+
+	str = t_str_new(128);
+	for (arg = client->common.auth_passdb_args; *arg != NULL; arg++) {
+		if (strncasecmp(*arg, "forward_", 8) == 0) {
+			if (str_len(str) > 0)
+				str_append_c(str, '\t');
+			str_append_tabescaped(str, (*arg)+8);
+		}
+	}
+
+	return t_base64_encode(0, 0, str_data(str), str_len(str));
 }
 
 static void
 proxy_send_xclient(struct submission_client *client, struct ostream *output)
 {
-	const char *const *arg;
-	string_t *str, *fwd;
+	string_t *str;
 
 	if ((client->proxy_capability & SMTP_CAPABILITY_XCLIENT) == 0 ||
 	    client->common.proxy_not_trusted)
 		return;
 
 	/* remote supports XCLIENT, send it */
-
-	fwd = t_str_new(128);
-	for(arg = client->common.auth_passdb_args; *arg != NULL; arg++) {
-		if (strncasecmp(*arg, "forward_", 8) == 0) {
-			if (str_len(fwd) > 0)
-				str_append_c(fwd, '\t');
-			str_append_tabescaped(fwd, (*arg)+8);
-		}
-	}
-
 	str = t_str_new(128);
 	str_append(str, "XCLIENT");
 	if (str_array_icase_find(client->proxy_xclient, "ADDR")) {
@@ -60,14 +62,18 @@ proxy_send_xclient(struct submission_client *client, struct ostream *output)
 		str_printfa(str, " PORT=%u", client->common.remote_port);
 	if (str_array_icase_find(client->proxy_xclient, "SESSION")) {
 		str_append(str, " SESSION=");
-		str_append(str, client_get_session_id(&client->common));
+		smtp_xtext_encode_cstr(
+			str, client_get_session_id(&client->common));
 	}
 	if (str_array_icase_find(client->proxy_xclient, "TTL"))
 		str_printfa(str, " TTL=%u", client->common.proxy_ttl - 1);
-	if (str_array_icase_find(client->proxy_xclient, "FORWARD") &&
-		str_len(fwd) > 0) {
-		str_append(str, " FORWARD=");
-		base64_encode(str_data(fwd), str_len(fwd), str);
+	if (str_array_icase_find(client->proxy_xclient, "FORWARD")) {
+		buffer_t *fwd = proxy_compose_xclient_forward(client);
+
+		if (fwd != NULL) {
+			str_append(str, " FORWARD=");
+			smtp_xtext_encode(str, fwd->data, fwd->used);
+		}
 	}
 	str_append(str, "\r\n");
 	o_stream_nsend(output, str_data(str), str_len(str));
@@ -84,10 +90,12 @@ proxy_send_login(struct submission_client *client, struct ostream *output)
 	string_t *str;
 
 	if ((client->proxy_capability & SMTP_CAPABILITY_AUTH) == 0) {
-		/* Prevent sending credentials to a server that has login disabled;
-		   i.e., due to the lack of TLS */
-		client_log_err(&client->common, "proxy: "
-			"Server has disabled authentication (TLS required?)");
+		/* Prevent sending credentials to a server that has login
+		   disabled; i.e., due to the lack of TLS */
+		login_proxy_failed(client->common.login_proxy,
+			login_proxy_get_event(client->common.login_proxy),
+			LOGIN_PROXY_FAILURE_TYPE_REMOTE_CONFIG,
+			"Authentication support not advertised (TLS required?)");
 		return -1;
 	}
 
@@ -112,9 +120,12 @@ proxy_send_login(struct submission_client *client, struct ostream *output)
 	str_printfa(str, "AUTH %s ", mech_name);
 	if (dsasl_client_output(client->common.proxy_sasl_client,
 				&sasl_output, &len, &error) < 0) {
-		client_log_err(&client->common, t_strdup_printf(
-			"proxy: SASL mechanism %s init failed: %s",
-			mech_name, error));
+		const char *reason = t_strdup_printf(
+			"SASL mechanism %s init failed: %s",
+			mech_name, error);
+		login_proxy_failed(client->common.login_proxy,
+			login_proxy_get_event(client->common.login_proxy),
+			LOGIN_PROXY_FAILURE_TYPE_INTERNAL, reason);
 		return -1;
 	}
 	if (len == 0)
@@ -123,8 +134,6 @@ proxy_send_login(struct submission_client *client, struct ostream *output)
 		base64_encode(sasl_output, len, str);
 	str_append(str, "\r\n");
 	o_stream_nsend(output, str_data(str), str_len(str));
-
-	proxy_free_password(&client->common);
 
 	if (client->proxy_state != SUBMISSION_PROXY_XCLIENT)
 		client->proxy_state = SUBMISSION_PROXY_AUTHENTICATE;
@@ -143,8 +152,10 @@ submission_proxy_continue_sasl_auth(struct client *client, struct ostream *outpu
 
 	str = t_str_new(128);
 	if (base64_decode(line, strlen(line), NULL, str) < 0) {
-		client_log_err(client,
-			"proxy: Server sent invalid base64 data in AUTH response");
+		login_proxy_failed(client->login_proxy,
+			login_proxy_get_event(client->login_proxy),
+			LOGIN_PROXY_FAILURE_TYPE_PROTOCOL,
+			"Invalid base64 data in AUTH response");
 		return -1;
 	}
 	ret = dsasl_client_input(client->proxy_sasl_client,
@@ -154,9 +165,11 @@ submission_proxy_continue_sasl_auth(struct client *client, struct ostream *outpu
 					  &data, &data_len, &error);
 	}
 	if (ret < 0) {
-		client_log_err(client, t_strdup_printf(
-			"proxy: Server sent invalid authentication data: %s",
-			error));
+		const char *reason = t_strdup_printf(
+			"Invalid authentication data: %s", error);
+		login_proxy_failed(client->login_proxy,
+			login_proxy_get_event(client->login_proxy),
+			LOGIN_PROXY_FAILURE_TYPE_PROTOCOL, reason);
 		return -1;
 	}
 	i_assert(ret == 0);
@@ -229,23 +242,25 @@ int submission_proxy_parse_line(struct client *client, const char *line)
 	i_assert(cmd != NULL);
 
 	if ((line[3] != ' ' && line[3] != '-') ||
-		str_parse_uint(line, &status, &text) < 0 ||
-		status < 200 || status >= 560) {
+	    str_parse_uint(line, &status, &text) < 0 ||
+	    status < 200 || status >= 560) {
 		invalid_line = TRUE;
 	} else {
 		text++;
 
 		if ((subm_client->proxy_capability &
-			SMTP_CAPABILITY_ENHANCEDSTATUSCODES) != 0)
+		    SMTP_CAPABILITY_ENHANCEDSTATUSCODES) != 0)
 			text = strip_enhanced_code(text, &enh_code);
 	}
 	if (subm_client->proxy_reply_status != 0 &&
-		subm_client->proxy_reply_status != status) {
-		client_log_err(client, t_strdup_printf(
-			"proxy: Remote returned inconsistent SMTP reply: %s "
-			"(status != %u)", str_sanitize(line, 160),
-			subm_client->proxy_reply_status));
-		client_proxy_failed(client, TRUE);
+	    subm_client->proxy_reply_status != status) {
+		const char *reason = t_strdup_printf(
+			"Inconsistent SMTP reply: %s (status != %u)",
+			str_sanitize(line, 160),
+			subm_client->proxy_reply_status);
+		login_proxy_failed(client->login_proxy,
+				   login_proxy_get_event(client->login_proxy),
+				   LOGIN_PROXY_FAILURE_TYPE_PROTOCOL, reason);
 		return -1;
 	}
 	if (line[3] == ' ') {
@@ -260,10 +275,11 @@ int submission_proxy_parse_line(struct client *client, const char *line)
 	case SUBMISSION_PROXY_BANNER:
 		/* this is a banner */
 		if (invalid_line || status != 220) {
-			client_log_err(client, t_strdup_printf(
-				"proxy: Remote returned invalid banner: %s",
-				str_sanitize(line, 160)));
-			client_proxy_failed(client, TRUE);
+			const char *reason = t_strdup_printf(
+				"Invalid banner: %s", str_sanitize(line, 160));
+			login_proxy_failed(client->login_proxy,
+				login_proxy_get_event(client->login_proxy),
+				LOGIN_PROXY_FAILURE_TYPE_PROTOCOL, reason);
 			return -1;
 		}
 		if (!last_line)
@@ -276,10 +292,12 @@ int submission_proxy_parse_line(struct client *client, const char *line)
 	case SUBMISSION_PROXY_EHLO:
 	case SUBMISSION_PROXY_TLS_EHLO:
 		if (invalid_line || (status / 100) != 2) {
-			client_log_err(client, t_strdup_printf(
-				"proxy: Remote returned invalid EHLO line: %s",
-				str_sanitize(line, 160)));
-			client_proxy_failed(client, TRUE);
+			const char *reason = t_strdup_printf(
+				"Invalid EHLO line: %s",
+				str_sanitize(line, 160));
+			login_proxy_failed(client->login_proxy,
+				login_proxy_get_event(client->login_proxy),
+				LOGIN_PROXY_FAILURE_TYPE_PROTOCOL, reason);
 			return -1;
 		}
 
@@ -304,24 +322,22 @@ int submission_proxy_parse_line(struct client *client, const char *line)
 			return 0;
 
 		if (subm_client->proxy_state == SUBMISSION_PROXY_TLS_EHLO) {
-			if (proxy_send_login(subm_client, output) < 0) {
-				client_proxy_failed(client, TRUE);
+			if (proxy_send_login(subm_client, output) < 0)
 				return -1;
-			}
 			return 0;
 		}
 
 		ssl_flags = login_proxy_get_ssl_flags(client->login_proxy);
 		if ((ssl_flags & PROXY_SSL_FLAG_STARTTLS) == 0) {
-			if (proxy_send_login(subm_client, output) < 0) {
-				client_proxy_failed(client, TRUE);
+			if (proxy_send_login(subm_client, output) < 0)
 				return -1;
-			}
 		} else {
 			if ((subm_client->proxy_capability &
-				SMTP_CAPABILITY_STARTTLS) == 0) {
-				client_log_err(client,
-					"proxy: Remote doesn't support STARTTLS");
+			     SMTP_CAPABILITY_STARTTLS) == 0) {
+				login_proxy_failed(client->login_proxy,
+					login_proxy_get_event(client->login_proxy),
+					LOGIN_PROXY_FAILURE_TYPE_REMOTE_CONFIG,
+					"STARTTLS not supported");
 				return -1;
 			}
 			o_stream_nsend_str(output, "STARTTLS\r\n");
@@ -330,33 +346,34 @@ int submission_proxy_parse_line(struct client *client, const char *line)
 		return 0;
 	case SUBMISSION_PROXY_STARTTLS:
 		if (invalid_line || status != 220) {
-			client_log_err(client, t_strdup_printf(
-				"proxy: Remote STARTTLS failed: %s",
-				str_sanitize(line, 160)));
-			client_proxy_failed(client, TRUE);
+			const char *reason = t_strdup_printf(
+				"STARTTLS failed: %s",
+				str_sanitize(line, 160));
+			login_proxy_failed(client->login_proxy,
+				login_proxy_get_event(client->login_proxy),
+				LOGIN_PROXY_FAILURE_TYPE_REMOTE, reason);
 			return -1;
 		}
 		if (!last_line)
 			return 0;
-		if (login_proxy_starttls(client->login_proxy) < 0) {
-			client_proxy_failed(client, TRUE);
+		if (login_proxy_starttls(client->login_proxy) < 0)
 			return -1;
-		}
 		/* i/ostreams changed. */
 		output = login_proxy_get_ostream(client->login_proxy);
 
 		subm_client->proxy_capability = 0;
 		i_free_and_null(subm_client->proxy_xclient);
 		subm_client->proxy_state = SUBMISSION_PROXY_TLS_EHLO;
-		o_stream_nsend_str(output, t_strdup_printf("EHLO %s\r\n",
-			subm_client->set->hostname));
+		o_stream_nsend_str(output, t_strdup_printf(
+			"EHLO %s\r\n", subm_client->set->hostname));
 		return 0;
 	case SUBMISSION_PROXY_XCLIENT:
 		if (invalid_line || (status / 100) != 2) {
-			client_log_err(client, t_strdup_printf(
-				"proxy: Remote XCLIENT failed: %s",
-				str_sanitize(line, 160)));
-			client_proxy_failed(client, TRUE);
+			const char *reason = t_strdup_printf(
+				"XCLIENT failed: %s", str_sanitize(line, 160));
+			login_proxy_failed(client->login_proxy,
+				login_proxy_get_event(client->login_proxy),
+				LOGIN_PROXY_FAILURE_TYPE_REMOTE, reason);
 			return -1;
 		}
 		if (!last_line)
@@ -369,17 +386,14 @@ int submission_proxy_parse_line(struct client *client, const char *line)
 		if (status == 334 && client->proxy_sasl_client != NULL) {
 			/* continue SASL authentication */
 			if (submission_proxy_continue_sasl_auth(client, output,
-								text) < 0) {
-				client_proxy_failed(client, TRUE);
+								text) < 0)
 				return -1;
-			}
 			return 0;
 		}
 
-		if (subm_client->proxy_reply == NULL) {
-			subm_client->proxy_reply =
-				smtp_server_reply_create(command, status, enh_code);
-		}
+		i_assert(subm_client->proxy_reply == NULL);
+		subm_client->proxy_reply = smtp_server_reply_create(
+			command, status, enh_code);
 		smtp_server_reply_add_text(subm_client->proxy_reply, text);
 
 		if (!last_line)
@@ -418,19 +432,20 @@ int submission_proxy_parse_line(struct client *client, const char *line)
 	   So for now we'll just forward the error message. This
 	   shouldn't be a real problem since of course everyone will
 	   be using only Dovecot as their backend :) */
-	if ((status / 100) == 2) {
-		submission_proxy_error(client, AUTH_FAILED_MSG);
-	} else {
+	enum login_proxy_failure_type failure_type =
+		LOGIN_PROXY_FAILURE_TYPE_AUTH;
+	if ((status / 100) == 4)
+		failure_type = LOGIN_PROXY_FAILURE_TYPE_AUTH_TEMPFAIL;
+	else {
+		i_assert((status / 100) != 2);
 		i_assert(subm_client->proxy_reply != NULL);
 		smtp_server_reply_submit(subm_client->proxy_reply);
 		subm_client->pending_auth = NULL;
 	}
 
-	if (client->set->auth_verbose) {
-		client_proxy_log_failure(client, text);
-	}
-	client->proxy_auth_failed = TRUE;
-	client_proxy_failed(client, FALSE);
+	login_proxy_failed(client->login_proxy,
+			   login_proxy_get_event(client->login_proxy),
+			   failure_type, text);
 	return -1;
 }
 
@@ -446,16 +461,48 @@ void submission_proxy_reset(struct client *client)
 	subm_client->proxy_reply = NULL;
 }
 
-void submission_proxy_error(struct client *client, const char *text)
+static void
+submission_proxy_send_failure_reply(struct submission_client *subm_client,
+				    enum login_proxy_failure_type type,
+				    const char *reason ATTR_UNUSED)
+{
+	struct smtp_server_cmd_ctx *cmd = subm_client->pending_auth;
+
+	switch (type) {
+	case LOGIN_PROXY_FAILURE_TYPE_CONNECT:
+	case LOGIN_PROXY_FAILURE_TYPE_INTERNAL:
+	case LOGIN_PROXY_FAILURE_TYPE_INTERNAL_CONFIG:
+	case LOGIN_PROXY_FAILURE_TYPE_REMOTE:
+	case LOGIN_PROXY_FAILURE_TYPE_REMOTE_CONFIG:
+	case LOGIN_PROXY_FAILURE_TYPE_PROTOCOL:
+		i_assert(cmd != NULL);
+		subm_client->pending_auth = NULL;
+		smtp_server_reply(cmd, 454, "4.7.0", LOGIN_PROXY_FAILURE_MSG);
+		break;
+	case LOGIN_PROXY_FAILURE_TYPE_AUTH_TEMPFAIL:
+		i_assert(cmd != NULL);
+		subm_client->pending_auth = NULL;
+
+		i_assert(subm_client->proxy_reply != NULL);
+		smtp_server_reply_submit(subm_client->proxy_reply);
+		break;
+	case LOGIN_PROXY_FAILURE_TYPE_AUTH:
+		/* reply was already sent */
+		i_assert(cmd == NULL);
+		break;
+	}
+}
+
+void submission_proxy_failed(struct client *client,
+			     enum login_proxy_failure_type type,
+			     const char *reason, bool reconnecting)
 {
 	struct submission_client *subm_client =
 		container_of(client, struct submission_client, common);
 
-	struct smtp_server_cmd_ctx *cmd = subm_client->pending_auth;
-	if (cmd != NULL) {
-		subm_client->pending_auth = NULL;
-		smtp_server_reply(cmd, 535, "5.7.8", "%s", text);
-	}
+	if (!reconnecting)
+		submission_proxy_send_failure_reply(subm_client, type, reason);
+	client_common_proxy_failed(client, type, reason, reconnecting);
 }
 
 const char *submission_proxy_get_state(struct client *client)

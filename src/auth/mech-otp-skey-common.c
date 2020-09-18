@@ -26,10 +26,10 @@ void otp_lock_init(void)
 
 bool otp_try_lock(struct auth_request *auth_request)
 {
-	if (hash_table_lookup(otp_lock_table, auth_request->user) != NULL)
+	if (hash_table_lookup(otp_lock_table, auth_request->fields.user) != NULL)
 		return FALSE;
 
-	hash_table_insert(otp_lock_table, auth_request->user, auth_request);
+	hash_table_insert(otp_lock_table, auth_request->fields.user, auth_request);
 	return TRUE;
 }
 
@@ -41,7 +41,7 @@ void otp_unlock(struct auth_request *auth_request)
 	if (!request->lock)
 		return;
 
-	hash_table_remove(otp_lock_table, auth_request->user);
+	hash_table_remove(otp_lock_table, auth_request->fields.user);
 	request->lock = FALSE;
 }
 
@@ -63,4 +63,9 @@ void mech_otp_skey_auth_free(struct auth_request *auth_request)
 	otp_unlock(auth_request);
 
 	pool_unref(&auth_request->pool);
+}
+
+void mech_otp_deinit(void)
+{
+	hash_table_destroy(&otp_lock_table);
 }

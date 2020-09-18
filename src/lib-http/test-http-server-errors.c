@@ -10,16 +10,17 @@
 #include "sleep.h"
 #include "connection.h"
 #include "test-common.h"
+#include "test-subprocess.h"
 #include "http-url.h"
 #include "http-request.h"
 #include "http-server.h"
 
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <signal.h>
 #include <unistd.h>
 
 #define SERVER_MAX_TIMEOUT_MSECS 10*1000
+#define CLIENT_KILL_TIMEOUT_SECS 20
+
+static void main_deinit(void);
 
 /*
  * Types
@@ -31,8 +32,8 @@ struct client_connection {
 	pool_t pool;
 };
 
-typedef void (*test_server_init_t)
-	(const struct http_server_settings *server_set);
+typedef void
+(*test_server_init_t)(const struct http_server_settings *server_set);
 typedef void (*test_client_init_t)(unsigned int index);
 
 /*
@@ -52,9 +53,7 @@ static int fd_listen = -1;
 static void (*test_server_request)(struct http_server_request *req);
 
 /* client */
-static pid_t *client_pids = NULL;
 static struct connection_list *client_conn_list;
-static unsigned int client_pids_count = 0;
 static unsigned int client_index;
 static void (*test_client_connected)(struct client_connection *conn);
 static void (*test_client_input)(struct client_connection *conn);
@@ -64,21 +63,19 @@ static void (*test_client_input)(struct client_connection *conn);
  */
 
 /* server */
-static void
-test_server_defaults(struct http_server_settings *http_set);
-static void
-test_server_run(const struct http_server_settings *http_set);
+static void test_server_defaults(struct http_server_settings *http_set);
+static void test_server_run(const struct http_server_settings *http_set);
 
 /* client */
+static void client_connection_deinit(struct client_connection **_conn);
 static void test_client_run(unsigned int index);
 
 /* test*/
-static void test_run_client_server(
-	const struct http_server_settings *server_set,
-	test_server_init_t server_test,
-	test_client_init_t client_test,
-	unsigned int client_tests_count)
-	ATTR_NULL(3);
+static void
+test_run_client_server(const struct http_server_settings *server_set,
+		       test_server_init_t server_test,
+		       test_client_init_t client_test,
+		       unsigned int client_tests_count) ATTR_NULL(3);
 
 /*
  * Slow request
@@ -92,13 +89,12 @@ test_slow_request_input(struct client_connection *conn ATTR_UNUSED)
 	/* do nothing */
 }
 
-static void
-test_slow_request_connected(struct client_connection *conn)
+static void test_slow_request_connected(struct client_connection *conn)
 {
 	o_stream_nsend_str(conn->conn.output,
-		"GET / HTTP/1.1\r\n"
-		"Host: example.com\r\n"
-		"\r\n");
+			   "GET / HTTP/1.1\r\n"
+			   "Host: example.com\r\n"
+			   "\r\n");
 }
 
 static void test_client_slow_request(unsigned int index)
@@ -116,8 +112,7 @@ struct _slow_request {
 	bool serviced:1;
 };
 
-static void
-test_server_slow_request_destroyed(struct _slow_request *ctx)
+static void test_server_slow_request_destroyed(struct _slow_request *ctx)
 {
 	test_assert(ctx->serviced);
 	timeout_remove(&ctx->to_delay);
@@ -125,8 +120,7 @@ test_server_slow_request_destroyed(struct _slow_request *ctx)
 	io_loop_stop(ioloop);
 }
 
-static void
-test_server_slow_request_delayed(struct _slow_request *ctx)
+static void test_server_slow_request_delayed(struct _slow_request *ctx)
 {
 	struct http_server_response *resp;
 	struct http_server_request *req = ctx->req;
@@ -138,12 +132,9 @@ test_server_slow_request_delayed(struct _slow_request *ctx)
 	http_server_request_unref(&req);
 }
 
-static void
-test_server_slow_request_request(
-	struct http_server_request *req)
+static void test_server_slow_request_request(struct http_server_request *req)
 {
-	const struct http_request *hreq =
-		http_server_request_get(req);
+	const struct http_request *hreq = http_server_request_get(req);
 	struct _slow_request *ctx;
 
 	if (debug) {
@@ -155,16 +146,16 @@ test_server_slow_request_request(
 	ctx = i_new(struct _slow_request, 1);
 	ctx->req = req;
 
-	http_server_request_set_destroy_callback(req,
-		test_server_slow_request_destroyed, ctx);
+	http_server_request_set_destroy_callback(
+		req, test_server_slow_request_destroyed, ctx);
 
 	http_server_request_ref(req);
-	ctx->to_delay = timeout_add
-		(4000, test_server_slow_request_delayed, ctx);
+	ctx->to_delay =
+		timeout_add(4000, test_server_slow_request_delayed, ctx);
 }
 
-static void test_server_slow_request
-(const struct http_server_settings *server_set)
+static void
+test_server_slow_request(const struct http_server_settings *server_set)
 {
 	test_server_request = test_server_slow_request_request;
 	test_server_run(server_set);
@@ -180,9 +171,8 @@ static void test_slow_request(void)
 	http_server_set.max_client_idle_time_msecs = 1000;
 
 	test_begin("slow request");
-	test_run_client_server(&http_server_set,
-		test_server_slow_request,
-		test_client_slow_request, 1);
+	test_run_client_server(&http_server_set, test_server_slow_request,
+			       test_client_slow_request, 1);
 	test_end();
 }
 
@@ -196,11 +186,11 @@ static void
 test_hanging_request_payload_connected(struct client_connection *conn)
 {
 	o_stream_nsend_str(conn->conn.output,
-		"GET / HTTP/1.1\r\n"
-		"Host: example.com\r\n"
-		"Content-Length: 1000\r\n"
-		"\r\n"
-		"To be continued... or not");
+			   "GET / HTTP/1.1\r\n"
+			   "Host: example.com\r\n"
+			   "Content-Length: 1000\r\n"
+			   "\r\n"
+			   "To be continued... or not");
 }
 
 static void test_client_hanging_request_payload(unsigned int index)
@@ -219,7 +209,8 @@ struct _hanging_request_payload {
 };
 
 static void
-test_server_hanging_request_payload_destroyed(struct _hanging_request_payload *ctx)
+test_server_hanging_request_payload_destroyed(
+	struct _hanging_request_payload *ctx)
 {
 	test_assert(!ctx->serviced);
 	io_remove(&ctx->io);
@@ -239,10 +230,9 @@ test_server_hanging_request_payload_input(struct _hanging_request_payload *ctx)
 	if (debug)
 		i_debug("test server: got more payload");
 
-	while ((ret=i_stream_read_data
-		(ctx->payload_input, &data, &size, 0)) > 0) {
+	while ((ret = i_stream_read_data(ctx->payload_input,
+					 &data, &size, 0)) > 0)
 		i_stream_skip(ctx->payload_input, size);
-	}
 
 	if (ret == 0)
 		return;
@@ -253,8 +243,7 @@ test_server_hanging_request_payload_input(struct _hanging_request_payload *ctx)
 		}
 		i_stream_unref(&ctx->payload_input);
 		io_remove(&ctx->io);
-		http_server_request_fail_close(req,
-			400, "Bad request");
+		http_server_request_fail_close(req, 400, "Bad request");
 		http_server_request_unref(&req);
 		return;
 	}
@@ -270,11 +259,9 @@ test_server_hanging_request_payload_input(struct _hanging_request_payload *ctx)
 }
 
 static void
-test_server_hanging_request_payload_request(
-	struct http_server_request *req)
+test_server_hanging_request_payload_request(struct http_server_request *req)
 {
-	const struct http_request *hreq =
-		http_server_request_get(req);
+	const struct http_request *hreq = http_server_request_get(req);
 	struct _hanging_request_payload *ctx;
 
 	if (debug) {
@@ -286,20 +273,21 @@ test_server_hanging_request_payload_request(
 	ctx = i_new(struct _hanging_request_payload, 1);
 	ctx->req = req;
 
-	http_server_request_set_destroy_callback(req,
-		test_server_hanging_request_payload_destroyed, ctx);
+	http_server_request_set_destroy_callback(
+		req, test_server_hanging_request_payload_destroyed, ctx);
 
-	ctx->payload_input =
-		http_server_request_get_payload_input(req, FALSE);
+	ctx->payload_input = http_server_request_get_payload_input(req, FALSE);
 
 	http_server_request_ref(req);
 	ctx->io = io_add_istream(ctx->payload_input,
-		test_server_hanging_request_payload_input, ctx);
+				 test_server_hanging_request_payload_input,
+				 ctx);
 	test_server_hanging_request_payload_input(ctx);
 }
 
-static void test_server_hanging_request_payload
-(const struct http_server_settings *server_set)
+static void
+test_server_hanging_request_payload(
+	const struct http_server_settings *server_set)
 {
 	test_server_request = test_server_hanging_request_payload_request;
 	test_server_run(server_set);
@@ -316,8 +304,8 @@ static void test_hanging_request_payload(void)
 
 	test_begin("hanging request payload");
 	test_run_client_server(&http_server_set,
-		test_server_hanging_request_payload,
-		test_client_hanging_request_payload, 1);
+			       test_server_hanging_request_payload,
+			       test_client_hanging_request_payload, 1);
 	test_end();
 }
 
@@ -331,11 +319,11 @@ static void
 test_hanging_response_payload_connected(struct client_connection *conn)
 {
 	o_stream_nsend_str(conn->conn.output,
-		"GET / HTTP/1.1\r\n"
-		"Host: example.com\r\n"
-		"Content-Length: 18\r\n"
-		"\r\n"
-		"Complete payload\r\n");
+			   "GET / HTTP/1.1\r\n"
+			   "Host: example.com\r\n"
+			   "Content-Length: 18\r\n"
+			   "\r\n"
+			   "Complete payload\r\n");
 }
 
 static void test_client_hanging_response_payload(unsigned int index)
@@ -354,7 +342,8 @@ struct _hanging_response_payload {
 };
 
 static void
-test_server_hanging_response_payload_destroyed(struct _hanging_response_payload *ctx)
+test_server_hanging_response_payload_destroyed(
+	struct _hanging_response_payload *ctx)
 {
 	test_assert(!ctx->serviced);
 	io_remove(&ctx->io);
@@ -363,8 +352,7 @@ test_server_hanging_response_payload_destroyed(struct _hanging_response_payload 
 }
 
 static void
-test_server_hanging_response_payload_request(
-	struct http_server_request *req)
+test_server_hanging_response_payload_request(struct http_server_request *req)
 {
 	const struct http_request *hreq =
 		http_server_request_get(req);
@@ -382,26 +370,27 @@ test_server_hanging_response_payload_request(
 	ctx = i_new(struct _hanging_response_payload, 1);
 	ctx->req = req;
 
-	http_server_request_set_destroy_callback(req,
-		test_server_hanging_response_payload_destroyed, ctx);
+	http_server_request_set_destroy_callback(
+		req, test_server_hanging_response_payload_destroyed, ctx);
 
 	resp = http_server_response_create(req, 200, "OK");
 	T_BEGIN {
 		payload = t_str_new(204800);
 		for (i = 0; i < 3200; i++) {
 			str_append(payload,
-				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"
-				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n");
+				   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"
+				   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n");
 		}
 
-		http_server_response_set_payload_data
-			(resp, str_data(payload), str_len(payload));
+		http_server_response_set_payload_data(resp, str_data(payload),
+						      str_len(payload));
 	} T_END;
 	http_server_response_submit(resp);
 }
 
-static void test_server_hanging_response_payload
-(const struct http_server_settings *server_set)
+static void
+test_server_hanging_response_payload(
+	const struct http_server_settings *server_set)
 {
 	test_server_request = test_server_hanging_response_payload_request;
 	test_server_run(server_set);
@@ -419,8 +408,8 @@ static void test_hanging_response_payload(void)
 
 	test_begin("hanging response payload");
 	test_run_client_server(&http_server_set,
-		test_server_hanging_response_payload,
-		test_client_hanging_response_payload, 1);
+			       test_server_hanging_response_payload,
+			       test_client_hanging_response_payload, 1);
 	test_end();
 }
 
@@ -433,7 +422,8 @@ static void test_hanging_response_payload(void)
 static void
 test_excessive_payload_length_connected1(struct client_connection *conn)
 {
-	o_stream_nsend_str(conn->conn.output,
+	o_stream_nsend_str(
+		conn->conn.output,
 		"GET / HTTP/1.1\r\n"
 		"Host: example.com\r\n"
 		"Content-Length: 150\r\n"
@@ -443,8 +433,7 @@ test_excessive_payload_length_connected1(struct client_connection *conn)
 		"Too long\r\nToo long\r\nToo long\r\nToo long\r\nToo long\r\n");
 }
 
-static void
-test_client_excessive_payload_length1(unsigned int index)
+static void test_client_excessive_payload_length1(unsigned int index)
 {
 	test_client_connected = test_excessive_payload_length_connected1;
 	test_client_run(index);
@@ -453,7 +442,8 @@ test_client_excessive_payload_length1(unsigned int index)
 static void
 test_excessive_payload_length_connected2(struct client_connection *conn)
 {
-	o_stream_nsend_str(conn->conn.output,
+	o_stream_nsend_str(
+		conn->conn.output,
 		"GET / HTTP/1.1\r\n"
 		"Host: example.com\r\n"
 		"Transfer-Encoding: chunked\r\n"
@@ -471,13 +461,11 @@ test_excessive_payload_length_connected2(struct client_connection *conn)
 		"\r\n");
 }
 
-static void
-test_client_excessive_payload_length2(unsigned int index)
+static void test_client_excessive_payload_length2(unsigned int index)
 {
 	test_client_connected = test_excessive_payload_length_connected2;
 	test_client_run(index);
 }
-
 
 /* server */
 
@@ -520,11 +508,9 @@ test_server_excessive_payload_length_finished(
 }
 
 static void
-test_server_excessive_payload_length_request(
-	struct http_server_request *req)
+test_server_excessive_payload_length_request(struct http_server_request *req)
 {
-	const struct http_request *hreq =
-		http_server_request_get(req);
+	const struct http_request *hreq = http_server_request_get(req);
 	struct _excessive_payload_length *ctx;
 
 	if (debug) {
@@ -537,14 +523,16 @@ test_server_excessive_payload_length_request(
 	ctx->req = req;
 	ctx->buffer = buffer_create_dynamic(default_pool, 128);
 
-	http_server_request_set_destroy_callback(req,
-		test_server_excessive_payload_length_destroyed, ctx);
-	http_server_request_buffer_payload(req,	ctx->buffer, 128,
+	http_server_request_set_destroy_callback(
+		req, test_server_excessive_payload_length_destroyed, ctx);
+	http_server_request_buffer_payload(
+		req, ctx->buffer, 128,
 		test_server_excessive_payload_length_finished, ctx);
 }
 
-static void test_server_excessive_payload_length
-(const struct http_server_settings *server_set)
+static void
+test_server_excessive_payload_length(
+	const struct http_server_settings *server_set)
 {
 	test_server_request = test_server_excessive_payload_length_request;
 	test_server_run(server_set);
@@ -561,14 +549,186 @@ static void test_excessive_payload_length(void)
 
 	test_begin("excessive payload length (length)");
 	test_run_client_server(&http_server_set,
-		test_server_excessive_payload_length,
-		test_client_excessive_payload_length1, 1);
+			       test_server_excessive_payload_length,
+			       test_client_excessive_payload_length1, 1);
 	test_end();
 
 	test_begin("excessive payload length (chunked)");
 	test_run_client_server(&http_server_set,
-		test_server_excessive_payload_length,
-		test_client_excessive_payload_length2, 1);
+			       test_server_excessive_payload_length,
+			       test_client_excessive_payload_length2, 1);
+	test_end();
+}
+
+/*
+ * Response ostream disconnect
+ */
+
+/* client */
+
+static void
+test_response_ostream_disconnect_connected(struct client_connection *conn)
+{
+	o_stream_nsend_str(conn->conn.output,
+			   "GET / HTTP/1.1\r\n"
+			   "Host: example.com\r\n"
+			   "Content-Length: 18\r\n"
+			   "\r\n"
+			   "Complete payload\r\n");
+	i_sleep_intr_msecs(10);
+	client_connection_deinit(&conn);
+	io_loop_stop(ioloop);
+}
+
+static void test_client_response_ostream_disconnect(unsigned int index)
+{
+	test_client_connected = test_response_ostream_disconnect_connected;
+	test_client_run(index);
+}
+
+/* server */
+
+struct _response_ostream_disconnect {
+	struct http_server_request *req;
+	struct istream *payload_input;
+	struct ostream *payload_output;
+	struct io *io;
+	bool finished:1;
+	bool seen_stream_error:1;
+};
+
+static void
+test_server_response_ostream_disconnect_destroyed(
+	struct _response_ostream_disconnect *ctx)
+{
+	test_assert(ctx->seen_stream_error);
+	io_remove(&ctx->io);
+	i_stream_unref(&ctx->payload_input);
+	i_free(ctx);
+	io_loop_stop(ioloop);
+}
+
+static int
+test_server_response_ostream_disconnect_output(
+	struct _response_ostream_disconnect *ctx)
+{
+	struct ostream *output = ctx->payload_output;
+	enum ostream_send_istream_result res;
+	int ret;
+
+	if (ctx->finished) {
+		ret = o_stream_finish(output);
+		if (ret == 0)
+			return ret;
+		if (ret < 0) {
+			if (debug) {
+				i_debug("OUTPUT ERROR: %s",
+					o_stream_get_error(output));
+			}
+			test_assert(output->stream_errno == ECONNRESET ||
+				    output->stream_errno == EPIPE);
+
+			ctx->seen_stream_error = TRUE;
+			o_stream_destroy(&ctx->payload_output);
+			return -1;
+		}
+		return 1;
+	}
+
+	o_stream_set_max_buffer_size(output, IO_BLOCK_SIZE);
+	res = o_stream_send_istream(output, ctx->payload_input);
+	o_stream_set_max_buffer_size(output, (size_t)-1);
+
+	switch (res) {
+	case OSTREAM_SEND_ISTREAM_RESULT_FINISHED:
+		ctx->finished = TRUE;
+		return test_server_response_ostream_disconnect_output(ctx);
+	case OSTREAM_SEND_ISTREAM_RESULT_WAIT_INPUT:
+		i_unreached();
+	case OSTREAM_SEND_ISTREAM_RESULT_WAIT_OUTPUT:
+		if (debug)
+			i_debug("WAIT OUTPUT");
+		return 1;
+	case OSTREAM_SEND_ISTREAM_RESULT_ERROR_INPUT:
+		i_unreached();
+	case OSTREAM_SEND_ISTREAM_RESULT_ERROR_OUTPUT:
+		if (debug) {
+			i_debug("OUTPUT ERROR: %s",
+				o_stream_get_error(output));
+		}
+		test_assert(output->stream_errno == ECONNRESET ||
+			    output->stream_errno == EPIPE);
+
+		ctx->seen_stream_error = TRUE;
+		o_stream_destroy(&ctx->payload_output);
+		return -1;
+	}
+	i_unreached();
+}
+
+static void
+test_server_response_ostream_disconnect_request(struct http_server_request *req)
+{
+	const struct http_request *hreq = http_server_request_get(req);
+	struct http_server_response *resp;
+	struct _response_ostream_disconnect *ctx;
+	string_t *data;
+	unsigned int i;
+
+	if (debug) {
+		i_debug("REQUEST: %s %s HTTP/%u.%u",
+			hreq->method, hreq->target_raw,
+			hreq->version_major, hreq->version_minor);
+	}
+
+	ctx = i_new(struct _response_ostream_disconnect, 1);
+	ctx->req = req;
+
+	data = str_new(default_pool, 2048000);
+	for (i = 0; i < 32000; i++) {
+		str_append(data, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"
+				 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n");
+	}
+	ctx->payload_input = i_stream_create_copy_from_data(
+		str_data(data), str_len(data));
+	str_free(&data);
+
+	resp = http_server_response_create(req, 200, "OK");
+	ctx->payload_output = http_server_response_get_payload_output(
+		resp, IO_BLOCK_SIZE, FALSE);
+
+	o_stream_add_destroy_callback(
+		ctx->payload_output,
+		test_server_response_ostream_disconnect_destroyed, ctx);
+
+	o_stream_set_flush_callback(
+		ctx->payload_output,
+		test_server_response_ostream_disconnect_output, ctx);
+	o_stream_set_flush_pending(ctx->payload_output, TRUE);
+}
+
+static void
+test_server_response_ostream_disconnect(
+	const struct http_server_settings *server_set)
+{
+	test_server_request = test_server_response_ostream_disconnect_request;
+	test_server_run(server_set);
+}
+
+/* test */
+
+static void test_response_ostream_disconnect(void)
+{
+	struct http_server_settings http_server_set;
+
+	test_server_defaults(&http_server_set);
+	http_server_set.socket_send_buffer_size = 4096;
+	http_server_set.max_client_idle_time_msecs = 10000;
+
+	test_begin("response ostream disconnect");
+	test_run_client_server(&http_server_set,
+			       test_server_response_ostream_disconnect,
+			       test_client_response_ostream_disconnect, 1);
 	test_end();
 }
 
@@ -581,6 +741,7 @@ static void (*const test_functions[])(void) = {
 	test_hanging_request_payload,
 	test_hanging_response_payload,
 	test_excessive_payload_length,
+	test_response_ostream_disconnect,
 	NULL
 };
 
@@ -590,8 +751,7 @@ static void (*const test_functions[])(void) = {
 
 /* client connection */
 
-static void
-client_connection_input(struct connection *_conn)
+static void client_connection_input(struct connection *_conn)
 {
 	struct client_connection *conn = (struct client_connection *)_conn;
 	
@@ -599,8 +759,7 @@ client_connection_input(struct connection *_conn)
 		test_client_input(conn);
 }
 
-static void
-client_connection_connected(struct connection *_conn, bool success)
+static void client_connection_connected(struct connection *_conn, bool success)
 {
 	struct client_connection *conn = (struct client_connection *)_conn;
 
@@ -608,8 +767,7 @@ client_connection_connected(struct connection *_conn, bool success)
 		test_client_connected(conn);
 }
 
-static void
-client_connection_init(const struct ip_addr *ip, in_port_t port)
+static void client_connection_init(const struct ip_addr *ip, in_port_t port)
 {
 	struct client_connection *conn;
 	pool_t pool;
@@ -623,8 +781,7 @@ client_connection_init(const struct ip_addr *ip, in_port_t port)
 	(void)connection_client_connect(&conn->conn);
 }
 
-static void
-server_connection_deinit(struct client_connection **_conn)
+static void client_connection_deinit(struct client_connection **_conn)
 {
 	struct client_connection *conn = *_conn;
 
@@ -634,13 +791,11 @@ server_connection_deinit(struct client_connection **_conn)
 	pool_unref(&conn->pool);
 }
 
-static void
-client_connection_destroy(struct connection *_conn)
+static void client_connection_destroy(struct connection *_conn)
 {
-	struct client_connection *conn =
-		(struct client_connection *)_conn;
+	struct client_connection *conn = (struct client_connection *)_conn;
 
-	server_connection_deinit(&conn);
+	client_connection_deinit(&conn);
 }
 
 /* */
@@ -664,8 +819,8 @@ static void test_client_run(unsigned int index)
 	if (debug)
 		i_debug("client connecting to %u", bind_port);
 
-	client_conn_list = connection_list_init
-		(&client_connection_set, &client_connection_vfuncs);
+	client_conn_list = connection_list_init(&client_connection_set,
+						&client_connection_vfuncs);
 
 	client_connection_init(&bind_ip, bind_port);
 
@@ -681,8 +836,7 @@ static void test_client_run(unsigned int index)
  * Test server
  */
 
-static void
-test_server_defaults(struct http_server_settings *http_set)
+static void test_server_defaults(struct http_server_settings *http_set)
 {
 	/* server settings */
 	i_zero(http_set);
@@ -695,7 +849,7 @@ test_server_defaults(struct http_server_settings *http_set)
 
 static void
 server_handle_request(void *context ATTR_UNUSED,
-	struct http_server_request *req)
+		      struct http_server_request *req)
 {
 	test_server_request(req);
 }
@@ -704,8 +858,7 @@ struct http_server_callbacks http_server_callbacks = {
 	.handle_request = server_handle_request
 };
 
-static void
-server_connection_accept(void *context ATTR_UNUSED)
+static void server_connection_accept(void *context ATTR_UNUSED)
 {
 	int fd;
 
@@ -718,28 +871,24 @@ server_connection_accept(void *context ATTR_UNUSED)
 	}
 
 	(void)http_server_connection_create(http_server, fd, fd, FALSE,
-		&http_server_callbacks, NULL);
+					    &http_server_callbacks, NULL);
 }
 
 /* */
 
-static void
-test_server_timeout(void *context ATTR_UNUSED)
+static void test_server_timeout(void *context ATTR_UNUSED)
 {
 	i_fatal("Server timed out");
 }
 
-static void
-test_server_run(const struct http_server_settings *http_set)
+static void test_server_run(const struct http_server_settings *http_set)
 {
 	struct timeout *to;
 
-	to = timeout_add(SERVER_MAX_TIMEOUT_MSECS,
-		test_server_timeout, NULL);
+	to = timeout_add(SERVER_MAX_TIMEOUT_MSECS, test_server_timeout, NULL);
 
 	/* open server socket */
-	io_listen = io_add(fd_listen,
-		IO_READ, server_connection_accept, NULL);
+	io_listen = io_add(fd_listen, IO_READ, server_connection_accept, NULL);
 
 	http_server = http_server_init(http_set);
 
@@ -756,6 +905,11 @@ test_server_run(const struct http_server_settings *http_set)
  * Tests
  */
 
+struct test_client_data {
+	unsigned int index;
+	test_client_init_t client_test;
+};
+
 static int test_open_server_fd(void)
 {
 	int fd = net_listen(&bind_ip, &bind_port, 128);
@@ -768,118 +922,100 @@ static int test_open_server_fd(void)
 	return fd;
 }
 
-static void test_clients_kill_all(void)
+static int test_run_client(struct test_client_data *data)
 {
-	unsigned int i;
+	i_close_fd(&fd_listen);
 
-	if (client_pids_count > 0) {
-		for (i = 0; i < client_pids_count; i++) {
-			if (client_pids[i] != (pid_t)-1) {
-				(void)kill(client_pids[i], SIGKILL);
-				(void)waitpid(client_pids[i], NULL, 0);
-				client_pids[i] = -1;
-			}
-		}
-	}
-	client_pids_count = 0;
+	i_set_failure_prefix("CLIENT[%u]: ", data->index + 1);
+
+	if (debug)
+		i_debug("PID=%s", my_pid);
+
+	/* Wait a little for server setup */
+	i_sleep_msecs(100);
+
+	ioloop = io_loop_create();
+	data->client_test(data->index);
+	io_loop_destroy(&ioloop);
+
+	if (debug)
+		i_debug("Terminated");
+
+	main_deinit();
+	return 0;
 }
 
-static void test_run_client_server(
-	const struct http_server_settings *server_set,
-	test_server_init_t server_test,
-	test_client_init_t client_test,
-	unsigned int client_tests_count)
+static void
+test_run_server(const struct http_server_settings *server_set,
+		test_server_init_t server_test)
 {
-	unsigned int i;
+	i_set_failure_prefix("SERVER: ");
 
-	client_pids = NULL;
-	client_pids_count = 0;
-
-	fd_listen = test_open_server_fd();
-
-	if (client_tests_count > 0) {
-		client_pids = i_new(pid_t, client_tests_count);
-		for (i = 0; i < client_tests_count; i++)
-			client_pids[i] = (pid_t)-1;
-		client_pids_count = client_tests_count;
-
-		for (i = 0; i < client_tests_count; i++) {
-			if ((client_pids[i] = fork()) == (pid_t)-1)
-				i_fatal("fork() failed: %m");
-			if (client_pids[i] == 0) {
-				client_pids[i] = (pid_t)-1;
-				client_pids_count = 0;
-				hostpid_init();
-				if (debug)
-					i_debug("client[%d]: PID=%s", i+1, my_pid);
-				/* child: client */
-				/* wait a little for server setup */
-				i_sleep_msecs(100);
-				i_close_fd(&fd_listen);
-				ioloop = io_loop_create();
-				client_test(i);
-				io_loop_destroy(&ioloop);
-				i_free(client_pids);
-				/* wait for it to be killed; this way, valgrind will not
-				   object to this process going away inelegantly. */
-				sleep(60);
-				exit(1);
-			}
-		}
-		if (debug)
-			i_debug("server: PID=%s", my_pid);
-	}
-
-	/* parent: server */
+	if (debug)
+		i_debug("PID=%s", my_pid);
 
 	ioloop = io_loop_create();
 	server_test(server_set);
 	io_loop_destroy(&ioloop);
 
-	i_close_fd(&fd_listen);
+	if (debug)
+		i_debug("Terminated");
+}
 
-	test_clients_kill_all();
-	i_free(client_pids);
+static void
+test_run_client_server(const struct http_server_settings *server_set,
+		       test_server_init_t server_test,
+		       test_client_init_t client_test,
+		       unsigned int client_tests_count)
+{
+	unsigned int i;
+
+	fd_listen = test_open_server_fd();
+
+	if (client_tests_count > 0) {
+		for (i = 0; i < client_tests_count; i++) {
+			struct test_client_data data;
+
+			i_zero(&data);
+			data.index = i;
+			data.client_test = client_test;
+
+			/* Fork client */
+			test_subprocess_fork(test_run_client, &data, FALSE);
+		}
+	}
+
+	/* Run server */
+	test_run_server(server_set, server_test);
+
+	i_unset_failure_prefix();
+	i_close_fd(&fd_listen);
+	test_subprocess_kill_all(CLIENT_KILL_TIMEOUT_SECS);
 }
 
 /*
  * Main
  */
 
-volatile sig_atomic_t terminating = 0;
-
-static void
-test_signal_handler(int signo)
+static void main_init(void)
 {
-	if (terminating != 0)
-		raise(signo);
-	terminating = 1;
-
-	/* make sure we don't leave any pesky children alive */
-	test_clients_kill_all();
-
-	(void)signal(signo, SIG_DFL);
-	raise(signo);
+	/* nothing yet */
 }
 
-static void test_atexit(void)
+static void main_deinit(void)
 {
-	test_clients_kill_all();
+	/* nothing yet; also called from sub-processes */
 }
 
 int main(int argc, char *argv[])
 {
 	int c;
+	int ret;
 
-	atexit(test_atexit);
-	(void)signal(SIGCHLD, SIG_IGN);
-	(void)signal(SIGTERM, test_signal_handler);
-	(void)signal(SIGQUIT, test_signal_handler);
-	(void)signal(SIGINT, test_signal_handler);
-	(void)signal(SIGSEGV, test_signal_handler);
-	(void)signal(SIGABRT, test_signal_handler);
+	lib_init();
+	main_init();
 
-  while ((c = getopt(argc, argv, "D")) > 0) {
+	while ((c = getopt(argc, argv, "D")) > 0) {
 		switch (c) {
 		case 'D':
 			debug = TRUE;
@@ -887,12 +1023,20 @@ int main(int argc, char *argv[])
 		default:
 			i_fatal("Usage: %s [-D]", argv[0]);
 		}
-  }
+	}
+
+	test_subprocesses_init(debug);
 
 	/* listen on localhost */
 	i_zero(&bind_ip);
 	bind_ip.family = AF_INET;
 	bind_ip.u.ip4.s_addr = htonl(INADDR_LOOPBACK);	
 
-	return test_run(test_functions);
+	ret = test_run(test_functions);
+
+	test_subprocesses_deinit();
+	main_deinit();
+	lib_deinit();
+	
+	return ret;
 }

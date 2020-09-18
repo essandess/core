@@ -8,6 +8,7 @@
 #include "istream-crlf.h"
 #include "ostream.h"
 #include "str.h"
+#include "str-sanitize.h"
 #include "dns-lookup.h"
 
 #include "smtp-common.h"
@@ -141,7 +142,7 @@ smtp_client_transaction_rcpt_update_event(
 	const char *to = smtp_address_encode(rcpt->rcpt_to);
 
 	event_set_append_log_prefix(rcpt->event,
-				    t_strdup_printf("rcpt <%s>: ", to));
+		t_strdup_printf("rcpt <%s>: ", str_sanitize(to, 128)));
 	event_add_str(rcpt->event, "rcpt_to", to);
 	smtp_params_rcpt_add_to_event(&rcpt->rcpt_params, rcpt->event);
 }
@@ -603,12 +604,13 @@ void smtp_client_transaction_ref(struct smtp_client_transaction *trans)
 void smtp_client_transaction_unref(struct smtp_client_transaction **_trans)
 {
 	struct smtp_client_transaction *trans = *_trans;
-	struct smtp_client_connection *conn = trans->conn;
+	struct smtp_client_connection *conn;
 
 	*_trans = NULL;
 
 	if (trans == NULL)
 		return;
+	conn = trans->conn;
 
 	i_assert(trans->refcount > 0);
 	if (--trans->refcount > 0)
@@ -962,7 +964,8 @@ void smtp_client_transaction_start(
 
 	smtp_client_connection_add_transaction(conn, trans);
 
-	if (trans->immediate) {
+	if (trans->immediate &&
+	    conn->state == SMTP_CLIENT_CONNECTION_STATE_READY) {
 		trans->state = SMTP_CLIENT_TRANSACTION_STATE_MAIL_FROM;
 
 		if (!trans->submitting)

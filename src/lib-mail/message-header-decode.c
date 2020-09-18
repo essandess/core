@@ -14,7 +14,7 @@ message_header_decode_encoded(const unsigned char *data, size_t size,
 {
 #define QCOUNT 3
 	unsigned int num = 0;
-	size_t i, start_pos[QCOUNT];
+	size_t i, start_pos[QCOUNT] = {0, 0, 0};
 
 	/* data should contain "charset?encoding?text?=" */
 	for (i = 0; i < size; i++) {
@@ -24,10 +24,13 @@ message_header_decode_encoded(const unsigned char *data, size_t size,
 				break;
 		}
 	}
+
 	if (i+1 >= size || data[i+1] != '=') {
 		/* invalid block */
 		return 0;
 	}
+
+	i_assert(num == QCOUNT);
 
 	buffer_append(decodebuf, data, start_pos[0]);
 	buffer_append_c(decodebuf, '\0');

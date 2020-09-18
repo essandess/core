@@ -13,22 +13,23 @@
  * String
  */
 
-int smtp_string_parse(const char *string,
-	const char **value_r, const char **error_r)
+int smtp_string_parse(const char *string, const char **value_r,
+		      const char **error_r)
 {
 	struct smtp_parser parser;
-	int ret;
+
+	*value_r = NULL;
+	*error_r = NULL;
 
 	if (string == NULL || *string == '\0') {
 		*value_r = "";
-		return 1;
+		return 0;
 	}
 
 	smtp_parser_init(&parser, pool_datastack_create(), string);
 
-	if ((ret=smtp_parser_parse_string(&parser, value_r)) < 0) {
-		if (error_r != NULL)
-			*error_r = parser.error;
+	if (smtp_parser_parse_string(&parser, value_r) < 0) {
+		*error_r = parser.error;
 		return -1;
 	}
 	if (parser.cur < parser.end) {
@@ -80,45 +81,55 @@ void smtp_string_write(string_t *out, const char *value)
  * Xtext encoding
  */
 
-int smtp_xtext_parse(const char *xtext,
-	const char **value_r, const char **error_r)
+int smtp_xtext_decode(string_t *out, const char *xtext, bool allow_nul,
+		      const char **error_r)
 {
 	struct smtp_parser parser;
-	string_t *value = NULL;
-	int ret;
 
-	if (xtext == NULL || *xtext == '\0') {
-		*value_r = "";
+	if (xtext == NULL || *xtext == '\0')
 		return 1;
-	}
 
-	if (value_r != NULL)
-		value = t_str_new(256);
 	smtp_parser_init(&parser, pool_datastack_create(), xtext);
 
-	if ((ret=smtp_parser_parse_xtext(&parser, value)) < 0) {
-		if (error_r != NULL)
-			*error_r = parser.error;
+	if (smtp_parser_parse_xtext(&parser, out) < 0) {
+		*error_r = parser.error;
 		return -1;
 	}
 	if (parser.cur < parser.end) {
 		*error_r = "Invalid character in xtext";
 		return -1;
 	}
-
-	if (value_r != NULL) {
-		*value_r = str_c(value);
-		if (strlen(*value_r) != str_len(value)) {
-			if (*error_r != NULL)
-				*error_r = "Encountered NUL character in xtext";
-			return -1;
-		}
+	if (!allow_nul && strlen(str_c(out)) != str_len(out)) {
+		*error_r = "Encountered NUL character in xtext";
+		return -1;
 	}
 	return 1;
 }
 
-void smtp_xtext_encode(string_t *out, const unsigned char *data,
-	size_t size)
+int smtp_xtext_parse(const char *xtext, const char **value_r,
+		     const char **error_r)
+{
+	string_t *value;
+	int ret;
+
+	*value_r = NULL;
+	*error_r = NULL;
+
+	if (xtext == NULL || *xtext == '\0') {
+		*value_r = "";
+		return 1;
+	}
+
+	value = t_str_new(256);
+	ret = smtp_xtext_decode(value, xtext, FALSE, error_r);
+	if (ret <= 0)
+		return ret;
+
+	*value_r = str_c(value);
+	return 1;
+}
+
+void smtp_xtext_encode(string_t *out, const unsigned char *data, size_t size)
 {
 	const unsigned char *p, *pbegin, *pend;
 
@@ -142,22 +153,24 @@ void smtp_xtext_encode(string_t *out, const unsigned char *data,
  * HELO domain
  */
 
-int smtp_helo_domain_parse(const char *helo,
-	bool allow_literal, const char **domain_r)
+int smtp_helo_domain_parse(const char *helo, bool allow_literal,
+			   const char **domain_r)
 {
 	struct smtp_parser parser;
 	int ret;
 
 	smtp_parser_init(&parser, pool_datastack_create(), helo);
 
-	if ((ret=smtp_parser_parse_domain(&parser, domain_r)) == 0) {
-		if (allow_literal)
-			ret = smtp_parser_parse_address_literal(&parser, domain_r, NULL);
+	ret = smtp_parser_parse_domain(&parser, domain_r);
+	if (ret == 0) {
+		if (allow_literal) {
+			ret = smtp_parser_parse_address_literal(
+				&parser, domain_r, NULL);
+		}
 	}
 
 	if (ret <= 0 || (parser.cur < parser.end && *parser.cur != ' '))
 		return -1;
-
 	return 0;
 }
 
@@ -221,15 +234,15 @@ bool smtp_ehlo_params_str_is_valid(const char *params)
 	return TRUE;
 }
 
-static int smtp_parse_ehlo_line(struct smtp_parser *parser,
-	const char **key_r, const char *const **params_r)
+static int
+smtp_parse_ehlo_line(struct smtp_parser *parser, const char **key_r,
+		     const char *const **params_r)
 {
 	const unsigned char *pbegin = parser->cur;
 	ARRAY_TYPE(const_string) params = ARRAY_INIT;
 	const char *param;
 
-	/*
-	   ehlo-line      = ehlo-keyword *( SP ehlo-param )
+	/* ehlo-line      = ehlo-keyword *( SP ehlo-param )
 	   ehlo-keyword   = (ALPHA / DIGIT) *(ALPHA / DIGIT / "-")
 	                    ; additional syntax of ehlo-params depends on
 	                    ; ehlo-keyword
@@ -246,15 +259,13 @@ static int smtp_parse_ehlo_line(struct smtp_parser *parser,
 	parser->cur++;
 
 	while (parser->cur < parser->end &&
-		(i_isalnum(*parser->cur) || *parser->cur == '-'))
+	       (i_isalnum(*parser->cur) || *parser->cur == '-'))
 		parser->cur++;
 
-	if (key_r != NULL)
-		*key_r = p_strdup_until(parser->pool, pbegin, parser->cur);
+	*key_r = p_strdup_until(parser->pool, pbegin, parser->cur);
 
 	if (parser->cur >= parser->end) {
-		if (params_r != NULL)
-			*params_r = p_new(parser->pool, const char *, 1);
+		*params_r = p_new(parser->pool, const char *, 1);
 		return 1;
 	}
 	if (*parser->cur != ' ') {
@@ -264,52 +275,52 @@ static int smtp_parse_ehlo_line(struct smtp_parser *parser,
 	parser->cur++;
 
 	pbegin = parser->cur;
-	if (params_r != NULL)
-		p_array_init(&params, parser->pool, 32);
+	p_array_init(&params, parser->pool, 32);
 	while (parser->cur < parser->end) {
 		if (*parser->cur == ' ') {
-			if (parser->cur+1 >= parser->end || *(parser->cur+1) == ' ') {
-				parser->error = "Missing EHLO parameter after ' '";
+			if (parser->cur+1 >= parser->end ||
+			    *(parser->cur+1) == ' ') {
+				parser->error =
+					"Missing EHLO parameter after ' '";
 				return -1;
 			}
-			if (params_r != NULL) {
-				param = p_strdup_until(parser->pool, pbegin, parser->cur);
-				array_push_back(&params, &param);
-			}
+			param = p_strdup_until(parser->pool, pbegin,
+					       parser->cur);
+			array_push_back(&params, &param);
 			pbegin = parser->cur + 1;
 		} else if (!smtp_char_is_ehlo_param(*parser->cur)) {
-			parser->error = "Unexpected character in EHLO parameter";
+			parser->error =
+				"Unexpected character in EHLO parameter";
 			return -1;
 		}
 		parser->cur++;
 	}
 
-	if (params_r != NULL) {
-		param = p_strdup_until(parser->pool, pbegin, parser->cur);
-		array_push_back(&params, &param);
-		array_append_zero(&params);
-		*params_r = array_front(&params);
-	}
+	param = p_strdup_until(parser->pool, pbegin, parser->cur);
+	array_push_back(&params, &param);
+	array_append_zero(&params);
+	*params_r = array_front(&params);
 	return 1;
 }
 
 int smtp_ehlo_line_parse(const char *ehlo_line, const char **key_r,
-	const char *const **params_r, const char **error_r)
+			 const char *const **params_r, const char **error_r)
 {
 	struct smtp_parser parser;
-	int ret;
+
+	*key_r = NULL;
+	*params_r = NULL;
+	*error_r = NULL;
 
 	if (ehlo_line == NULL || *ehlo_line == '\0') {
-		if (error_r != NULL)
-			*error_r = "Parameter is empty";
+		*error_r = "Parameter is empty";
 		return -1;
 	}
 
 	smtp_parser_init(&parser, pool_datastack_create(), ehlo_line);
 
-	if ((ret=smtp_parse_ehlo_line(&parser, key_r, params_r)) <= 0) {
-		if (error_r != NULL)
-			*error_r = parser.error;
+	if (smtp_parse_ehlo_line(&parser, key_r, params_r) <= 0) {
+		*error_r = parser.error;
 		return -1;
 	}
 	return 1;

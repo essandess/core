@@ -35,12 +35,14 @@ compile_commands.json
 /stamp.h
 /stamp-h1
 /stamp-h2
+/ylwrap
 /autom4te.cache
 /ChangeLog
 /cc-wrapper.sh
 /dovecot-config
 /dovecot-config.in
 /dovecot-version.h
+/dovecot.service
 /README
 /INSTALL
 
@@ -97,6 +99,7 @@ doc/man/doveadm.1
 doc/man/doveconf.1
 doc/man/dovecot-lda.1
 doc/man/dovecot.1
+doc/man/dovecot-sysreport.1
 
 doc/example-config/README
 doc/wiki/*.txt
@@ -123,8 +126,12 @@ src/imap/imap
 src/indexer/indexer
 src/indexer/indexer-worker
 src/ipc/ipc
+src/lib/event-filter-lexer.c
+src/lib/event-filter-parser.c
+src/lib/event-filter-parser.h
 src/lib/unicodemap.c
 src/lib/UnicodeData.txt
+src/lib-compression/bench-compression
 src/lib-fts/PropList.txt
 src/lib-fts/WordBreakProperty.txt
 src/lib-fts/word-boundary-data.c

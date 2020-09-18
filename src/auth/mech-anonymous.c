@@ -12,13 +12,13 @@ mech_anonymous_auth_continue(struct auth_request *request,
 	if (request->set->verbose) {
 		/* temporarily set the user to the one that was given,
 		   so that the log message goes right */
-		request->user =
-			p_strndup(pool_datastack_create(), data, data_size);
+		auth_request_set_username_forced(request,
+			t_strndup(data, data_size));
 		e_info(request->mech_event, "login");
 	}
 
-	request->user = p_strdup(request->pool,
-				 request->set->anonymous_username);
+	auth_request_set_username_forced(request,
+					 request->set->anonymous_username);
 
 	request->passdb_success = TRUE;
 	auth_request_success(request, "", 0);
@@ -38,7 +38,7 @@ static struct auth_request *mech_anonymous_auth_new(void)
 const struct mech_module mech_anonymous = {
 	"ANONYMOUS",
 
-	.flags = MECH_SEC_ANONYMOUS,
+	.flags = MECH_SEC_ANONYMOUS | MECH_SEC_ALLOW_NULS,
 	.passdb_need = MECH_PASSDB_NEED_NOTHING,
 
 	mech_anonymous_auth_new,

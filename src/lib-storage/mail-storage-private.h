@@ -106,8 +106,6 @@ enum mail_storage_class_flags {
 	/* Storage deletes all files internally - mailbox list's
 	   delete_mailbox() shouldn't delete anything itself. */
 	MAIL_STORAGE_CLASS_FLAG_NO_LIST_DELETES	= 0x400,
-	/* Storage supports stubs (used for caching purposes). */
-	MAIL_STORAGE_CLASS_FLAG_STUBS = 0x800,
 };
 
 struct mail_binary_cache {
@@ -467,6 +465,9 @@ struct mailbox {
 	/* Using LAYOUT=index and mailbox is being opened with a corrupted
 	   mailbox name. Try to revert to the previously known good name. */
 	bool corrupted_mailbox_name:1;
+	/* mailbox_open() returned MAIL_ERROR_NOTFOUND because the mailbox
+	   doesn't have the LOOKUP ACL right. */
+	bool acl_no_lookup_right:1;
 };
 
 struct mail_vfuncs {
@@ -674,7 +675,7 @@ struct mail_save_data {
 	time_t received_date, save_date;
 	int received_tz_offset;
 
-	uint32_t uid, stub_seq;
+	uint32_t uid;
 	char *guid, *pop3_uidl, *from_envelope;
 	uint32_t pop3_order;
 

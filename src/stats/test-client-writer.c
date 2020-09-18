@@ -20,7 +20,7 @@ static int test_writer_server_input_args(struct connection *conn,
 {
 	/* check filter */
 	test_assert_strcmp(args[0], "FILTER");
-	test_assert_strcmp(args[1], "ntest");
+	test_assert_strcmp(args[1], "(event=\"test\")");
 	/* send commands now */
 	string_t *send_buf = t_str_new(128);
 	o_stream_nsend_str(conn->output, "CATEGORY\ttest\n");
@@ -61,7 +61,7 @@ static void test_write_one(struct event *event ATTR_UNUSED)
 
 	struct ioloop *loop = io_loop_create();
 
-	client_writer_create(fds[1], metrics);
+	client_writer_create(fds[1]);
 	connection_init_client_fd(conn_list, conn, "stats", fds[0], fds[0]);
 
 	last_sent_event = event;
@@ -89,7 +89,7 @@ bool test_stats_callback(struct event *event,
 		return TRUE;
 
 	recurse_back = TRUE;
-	if (metrics != NULL) {
+	if (stats_metrics != NULL) {
 		test_write_one(event);
 	}
 	recurse_back = FALSE;
@@ -99,8 +99,8 @@ bool test_stats_callback(struct event *event,
 
 static const char *settings_blob_1 =
 "metric=test\n"
-"metric/test/name=test\n"
-"metric/test/event_name=test\n"
+"metric/test/metric_name=test\n"
+"metric/test/filter=event=test\n"
 "\n";
 
 static void test_client_writer(void)

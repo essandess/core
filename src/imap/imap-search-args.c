@@ -35,6 +35,14 @@ static bool search_args_have_searchres(struct mail_search_arg *sargs)
 	return FALSE;
 }
 
+static void imap_search_saved_uidset_clear(struct client_command_context *cmd)
+{
+	if (array_is_created(&cmd->client->search_saved_uidset))
+		array_clear(&cmd->client->search_saved_uidset);
+	else
+		i_array_init(&cmd->client->search_saved_uidset, 128);
+}
+
 int imap_search_args_build(struct client_command_context *cmd,
 			   const struct imap_arg *args, const char *charset,
 			   struct mail_search_args **search_args_r)
@@ -55,8 +63,10 @@ int imap_search_args_build(struct client_command_context *cmd,
 	mail_search_parser_deinit(&parser);
 	if (ret < 0) {
 		if (charset == NULL) {
+			if (cmd->search_save_result)
+				imap_search_saved_uidset_clear(cmd);
 			client_send_tagline(cmd, t_strconcat(
-				"BAD [BADCHARSET] ", client_error, NULL));
+				"NO [BADCHARSET] ", client_error, NULL));
 		} else {
 			client_send_command_error(cmd, client_error);
 		}
@@ -70,6 +80,11 @@ int imap_search_args_build(struct client_command_context *cmd,
 
 	mail_search_args_init(sargs, cmd->client->mailbox, TRUE,
 			      &cmd->client->search_saved_uidset);
+	if (cmd->search_save_result) {
+		/* clear the SAVE resultset only after potentially using $
+		   in the search args themselves */
+		imap_search_saved_uidset_clear(cmd);
+	}
 	*search_args_r = sargs;
 	return 1;
 }
@@ -223,4 +238,86 @@ void imap_search_add_changed_since(struct mail_search_args *search_args,
 
 	search_arg->next = search_args->args->next;
 	search_args->args->next = search_arg;
+}
+
+struct imap_search_seqset_iter {
+	struct mail_search_args *search_args;
+	ARRAY_TYPE(seq_range) seqset_left;
+	unsigned int batch_size;
+};
+
+static void imap_search_seqset_next_batch(struct imap_search_seqset_iter *iter)
+{
+	array_clear(&iter->search_args->args->value.seqset);
+	seq_range_array_merge_n(&iter->search_args->args->value.seqset,
+				&iter->seqset_left, iter->batch_size);
+}
+
+struct imap_search_seqset_iter *
+imap_search_seqset_iter_init(struct mail_search_args *search_args,
+			     uint32_t messages_count, unsigned int batch_size)
+{
+	struct imap_search_seqset_iter *iter;
+
+	i_assert(search_args->args->next == NULL);
+
+	iter = i_new(struct imap_search_seqset_iter, 1);
+	iter->search_args = search_args;
+	iter->batch_size = batch_size;
+	mail_search_args_ref(iter->search_args);
+
+	/* Assume that the search query is always a seqset or SEARCH_ALL. */
+	switch (search_args->args->type) {
+	case SEARCH_SEQSET:
+		break;
+	case SEARCH_ALL:
+		if (search_args->args->match_not) {
+			/* $ used before search result was saved */
+			return iter;
+		}
+		/* 1:* - convert to seqset */
+		search_args->args->type = SEARCH_SEQSET;
+		p_array_init(&search_args->args->value.seqset,
+			     search_args->pool, 1);
+		seq_range_array_add_range(&search_args->args->value.seqset,
+					  1, messages_count);
+		break;
+	default:
+		i_panic("Unexpected search_args type %d",
+			search_args->args->type);
+	}
+
+	i_assert(search_args->args->type == SEARCH_SEQSET);
+
+	i_array_init(&iter->seqset_left,
+		     array_count(&search_args->args->value.seqset));
+	array_append_array(&iter->seqset_left, &search_args->args->value.seqset);
+	imap_search_seqset_next_batch(iter);
+	return iter;
+}
+
+void imap_search_seqset_iter_deinit(struct imap_search_seqset_iter **_iter)
+{
+	struct imap_search_seqset_iter *iter = *_iter;
+
+	if (iter == NULL)
+		return;
+
+	mail_search_args_unref(&iter->search_args);
+	array_free(&iter->seqset_left);
+	i_free(iter);
+}
+
+bool imap_search_seqset_iter_next(struct imap_search_seqset_iter *iter)
+{
+	if (!array_is_created(&iter->seqset_left) ||
+	    array_count(&iter->seqset_left) == 0)
+		return FALSE;
+
+	/* remove the last batch of searched mails from seqset_left */
+	if (seq_range_array_remove_seq_range(&iter->seqset_left,
+			&iter->search_args->args->value.seqset) == 0)
+		i_unreached();
+	imap_search_seqset_next_batch(iter);
+	return array_count(&iter->search_args->args->value.seqset) > 0;
 }

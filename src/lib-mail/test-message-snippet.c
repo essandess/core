@@ -3,6 +3,7 @@
 #include "lib.h"
 #include "str.h"
 #include "istream.h"
+#include "unichar.h"
 #include "message-snippet.h"
 #include "test-common.h"
 
@@ -80,6 +81,36 @@ static const struct {
 	  "top\nposter\n>quote1\n>quote2\n",
 	  100,
 	  "top poster" },
+	{ "Content-Type: text/plain\n"
+	  "\n"
+	  ">quoted long text",
+	  7,
+	  ">quoted" },
+	{ "Content-Type: text/plain\n"
+	  "\n"
+	  ">quoted long text",
+	  8,
+	  ">quoted" },
+	{ "Content-Type: text/plain\n"
+	  "\n"
+	  "whitespace and more",
+	  10,
+	  "whitespace" },
+	{ "Content-Type: text/plain\n"
+	  "\n"
+	  "whitespace and more",
+	  11,
+	  "whitespace" },
+	{ "Content-Type: text/plain; charset=utf-8\n"
+	  "\n"
+	  "Invalid utf8 \x80\xff\n",
+	  100,
+	  "Invalid utf8 "UNICODE_REPLACEMENT_CHAR_UTF8 },
+	{ "Content-Type: text/plain; charset=utf-8\n"
+	  "\n"
+	  "Incomplete utf8 \xC3",
+	  100,
+	  "Incomplete utf8" },
         { "Content-Transfer-Encoding: quoted-printable\n"
           "Content-Type: text/html;\n"
           "      charset=utf-8\n"
@@ -102,7 +133,12 @@ static void test_message_snippet(void)
 	test_begin("message snippet");
 	for (i = 0; i < N_ELEMENTS(tests); i++) {
 		str_truncate(str, 0);
-		input = i_stream_create_from_data(tests[i].input, strlen(tests[i].input));
+		input = test_istream_create(tests[i].input);
+		/* Limit the input max buffer size so the parsing uses multiple
+		   blocks. 45 = large enough to be able to read the Content-*
+		   headers. */
+		test_istream_set_max_buffer_size(input,
+			I_MIN(45, strlen(tests[i].input)));
 		test_assert_idx(message_snippet_generate(input, tests[i].max_snippet_chars, str) == 0, i);
 		test_assert_idx(strcmp(tests[i].output, str_c(str)) == 0, i);
 		i_stream_destroy(&input);

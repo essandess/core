@@ -1,10 +1,11 @@
 /* Copyright (c) 2017-2018 Dovecot authors, see the included COPYING file */
 
-#include "lib.h"
+#include "stats-common.h"
 #include "array.h"
 #include "llist.h"
 #include "hash.h"
 #include "str.h"
+#include "strescape.h"
 #include "lib-event-private.h"
 #include "event-filter.h"
 #include "ostream.h"
@@ -24,7 +25,6 @@ struct stats_event {
 
 struct writer_client {
 	struct connection conn;
-	struct stats_metrics *metrics;
 
 	struct stats_event *events;
 	HASH_TABLE(struct stats_event *, struct stats_event *) events_hash;
@@ -34,10 +34,13 @@ static struct connection_list *writer_clients = NULL;
 
 static void client_writer_send_handshake(struct writer_client *client)
 {
+	string_t *filter = t_str_new(128);
 	string_t *str = t_str_new(128);
 
+	event_filter_export(stats_metrics_get_event_filter(stats_metrics), filter);
+
 	str_append(str, "FILTER\t");
-	event_filter_export(stats_metrics_get_event_filter(client->metrics), str);
+	str_append_tabescaped(str, str_c(filter));
 	str_append_c(str, '\n');
 	o_stream_nsend(client->conn.output, str_data(str), str_len(str));
 }
@@ -53,12 +56,11 @@ static int stats_event_cmp(const struct stats_event *event1,
 	return event1->id == event2->id ? 0 : 1;
 }
 
-void client_writer_create(int fd, struct stats_metrics *metrics)
+void client_writer_create(int fd)
 {
 	struct writer_client *client;
 
 	client = i_new(struct writer_client, 1);
-	client->metrics = metrics;
 	hash_table_create(&client->events_hash, default_pool, 0,
 			  stats_event_hash, stats_event_cmp);
 
@@ -126,7 +128,7 @@ writer_client_run_event(struct writer_client *client,
 		event_unref(&event);
 		return FALSE;
 	}
-	stats_metrics_event(client->metrics, event, &ctx);
+	stats_metrics_event(stats_metrics, event, &ctx);
 	*event_r = event;
 	return TRUE;
 }
@@ -175,6 +177,36 @@ writer_client_input_event_begin(struct writer_client *client,
 	DLLIST_PREPEND(&client->events, stats_event);
 	hash_table_insert(client->events_hash, stats_event, stats_event);
 	return TRUE;
+}
+
+static bool
+writer_client_input_event_update(struct writer_client *client,
+				 const char *const *args, const char **error_r)
+{
+	struct stats_event *stats_event, *parent_stats_event;
+	struct event *parent_event;
+	uint64_t event_id, parent_event_id;
+
+	if (args[0] == NULL || args[1] == NULL ||
+	    str_to_uint64(args[0], &event_id) < 0 ||
+	    str_to_uint64(args[1], &parent_event_id) < 0) {
+		*error_r = "Invalid event IDs";
+		return FALSE;
+	}
+	stats_event = writer_client_find_event(client, event_id);
+	if (stats_event == NULL) {
+		*error_r = "Unknown event ID";
+		return FALSE;
+	}
+	parent_stats_event = parent_event_id == 0 ? NULL :
+		writer_client_find_event(client, parent_event_id);
+	parent_event = parent_stats_event == NULL ? NULL :
+		parent_stats_event->event;
+	if (stats_event->event->parent != parent_event) {
+		*error_r = "Event unexpectedly changed parent";
+		return FALSE;
+	}
+	return event_import_unescaped(stats_event->event, args, error_r);
 }
 
 static bool
@@ -250,6 +282,8 @@ writer_client_input_args(struct connection *conn, const char *const *args)
 		ret = writer_client_input_event(client, args+1, &error);
 	else if (strcmp(cmd, "BEGIN") == 0)
 		ret = writer_client_input_event_begin(client, args+1, &error);
+	else if (strcmp(cmd, "UPDATE") == 0)
+		ret = writer_client_input_event_update(client, args+1, &error);
 	else if (strcmp(cmd, "END") == 0)
 		ret = writer_client_input_event_end(client, args+1, &error);
 	else if (strcmp(cmd, "CATEGORY") == 0)

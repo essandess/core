@@ -83,14 +83,16 @@ void imap_write_arg(string_t *dest, const struct imap_arg *arg)
 	case IMAP_ARG_ATOM:
 		str_append(dest, imap_arg_as_astring(arg));
 		break;
-	case IMAP_ARG_STRING:
+	case IMAP_ARG_STRING: {
+		const char *strarg = imap_arg_as_astring(arg);
 		str_append_c(dest, '"');
-		str_append(dest, str_escape(imap_arg_as_astring(arg)));
+		str_append_escaped(dest, strarg, strlen(strarg));
 		str_append_c(dest, '"');
 		break;
+	}
 	case IMAP_ARG_LITERAL: {
 		const char *strarg = imap_arg_as_astring(arg);
-		str_printfa(dest, "{%"PRIuSIZE_T"}\r\n",
+		str_printfa(dest, "{%zu}\r\n",
 			    strlen(strarg));
 		str_append(dest, strarg);
 		break;
@@ -156,7 +158,7 @@ void imap_write_args_for_human(string_t *dest, const struct imap_arg *args)
 			const char *strarg = imap_arg_as_astring(args);
 
 			if (strpbrk(strarg, "\r\n") != NULL) {
-				str_printfa(dest, "<%"PRIuSIZE_T" byte multi-line literal>",
+				str_printfa(dest, "<%zu byte multi-line literal>",
 					    strlen(strarg));
 				break;
 			}

@@ -176,7 +176,7 @@ void message_part_envelope_parse_from_header(pool_t pool,
 {
 	struct message_part_envelope *d;
 	enum envelope_field field;
-	struct message_address **addr_p;
+	struct message_address **addr_p, *addr;
 	const char **str_p;
 
 	if (*data == NULL) {
@@ -234,10 +234,18 @@ void message_part_envelope_parse_from_header(pool_t pool,
 	}
 
 	if (addr_p != NULL) {
-		*addr_p = message_address_parse(pool, hdr->full_value,
-						hdr->full_value_len,
-						UINT_MAX,
-						MESSAGE_ADDRESS_PARSE_FLAG_FILL_MISSING);
+		addr = message_address_parse(pool, hdr->full_value,
+					     hdr->full_value_len,
+					     UINT_MAX,
+					     MESSAGE_ADDRESS_PARSE_FLAG_FILL_MISSING);
+		/* Merge multiple headers the same as if they were comma
+		   separated in a single line. This is better from security
+		   point of view, because attacker could intentionally write
+		   addresses in a way that e.g. the first From header is
+		   validated while MUA only shows the second From header. */
+		while (*addr_p != NULL)
+			addr_p = &(*addr_p)->next;
+		*addr_p = addr;
 	} else if (str_p != NULL) {
 		*str_p = message_header_strdup(pool, hdr->full_value,
 					       hdr->full_value_len);
@@ -480,8 +488,7 @@ void message_part_data_parse_from_header(pool_t pool,
 		if (part->data == NULL) {
 			/* no Content-* headers. add an empty context
 			   structure anyway. */
-			part->data = part_data =
-				p_new(pool, struct message_part_data, 1);
+			part->data = p_new(pool, struct message_part_data, 1);
 		} else if ((part->flags & MESSAGE_PART_FLAG_IS_MIME) == 0) {
 			/* If there was no Mime-Version, forget all
 			   the Content-stuff */
@@ -504,8 +511,7 @@ void message_part_data_parse_from_header(pool_t pool,
 
 	if (part->data == NULL) {
 		/* initialize message part data */
-		part->data = part_data =
-			p_new(pool, struct message_part_data, 1);
+		part->data = p_new(pool, struct message_part_data, 1);
 	}
 	part_data = part->data;
 

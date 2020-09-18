@@ -10,6 +10,7 @@
 #include "backtrace-string.h"
 #include "printf-format-fix.h"
 #include "write-full.h"
+#include "time-util.h"
 #include "failures-private.h"
 
 #include <unistd.h>
@@ -320,8 +321,7 @@ static void log_timestamp_add(const struct failure_context *ctx, string_t *str)
 
 	if (log_stamp_format != NULL) {
 		if (tm == NULL) {
-			if (gettimeofday(&now, NULL) < 0)
-				i_panic("gettimeofday() failed: %m");
+			i_gettimeofday(&now);
 			tm = localtime(&now.tv_sec);
 		} else {
 			now.tv_usec = ctx->timestamp_usecs;
@@ -755,12 +755,30 @@ const char *i_get_failure_prefix(void)
 
 static int internal_send_split(string_t *full_str, size_t prefix_len)
 {
+	/* This function splits the log line into PIPE_BUF sized blocks, so
+	   the log process doesn't see partial lines. The log prefix is
+	   repeated for each sent line. However, if the log prefix is
+	   excessively long, we're still going to send the log lines even
+	   if they are longer than PIPE_BUF. LINE_MIN_TEXT_LEN controls the
+	   minimum number of bytes we're going to send of the actual log line
+	   regardless of the log prefix length. (Alternative solution could be
+	   to just forcibly split the line to PIPE_BUF length blocks without
+	   repeating the log prefix for subsequent lines.) */
+#define LINE_MIN_TEXT_LEN 128
+#if LINE_MIN_TEXT_LEN >= PIPE_BUF
+#  error LINE_MIN_TEXT_LEN too large
+#endif
 	string_t *str;
 	size_t max_text_len, pos = prefix_len;
 
 	str = t_str_new(PIPE_BUF);
 	str_append_data(str, str_data(full_str), prefix_len);
-	max_text_len = PIPE_BUF - prefix_len - 1;
+	if (prefix_len < PIPE_BUF) {
+		max_text_len = I_MAX(PIPE_BUF - prefix_len - 1,
+				     LINE_MIN_TEXT_LEN);
+	} else {
+		max_text_len = LINE_MIN_TEXT_LEN;
+	}
 
 	while (pos < str_len(full_str)) {
 		str_truncate(str, prefix_len);

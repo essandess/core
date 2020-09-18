@@ -4,6 +4,7 @@
 #include "buffer.h"
 #include "array.h"
 #include "str.h"
+#include "str-sanitize.h"
 #include "llist.h"
 #include "istream.h"
 #include "ostream.h"
@@ -57,7 +58,7 @@ smtp_client_command_update_event(struct smtp_client_command *cmd)
 	event_set_append_log_prefix(
 		cmd->event,
 		t_strdup_printf("command %s: ",
-				smtp_client_command_get_label(cmd)));
+			str_sanitize(smtp_client_command_get_label(cmd), 128)));
 }
 
 static struct smtp_client_command *
@@ -1424,7 +1425,7 @@ _cmd_bdat_send_chunks(struct _cmd_data_context *ctx,
 	cmd = ctx->cmd_data;
 	smtp_client_command_set_stream(cmd, chunk, FALSE);
 	i_stream_unref(&chunk);
-	smtp_client_command_printf(cmd, "BDAT %"PRIuSIZE_T" LAST", data_size);
+	smtp_client_command_printf(cmd, "BDAT %zu LAST", data_size);
 	smtp_client_command_submit_after(cmd, cmd_prev);
 
 	if (array_count(&ctx->cmds) == 0) {

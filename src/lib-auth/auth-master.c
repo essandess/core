@@ -12,6 +12,7 @@
 #include "strescape.h"
 #include "connection.h"
 #include "master-interface.h"
+#include "auth-client-private.h"
 #include "auth-master.h"
 
 #include <unistd.h>
@@ -23,10 +24,6 @@
 
 #define MAX_INBUF_SIZE 8192
 #define MAX_OUTBUF_SIZE 1024
-
-static struct event_category event_category_auth_master_client = {
-	.name = "auth-master-client"
-};
 
 struct auth_master_connection {
 	struct connection conn;
@@ -110,7 +107,7 @@ auth_master_init(const char *auth_socket_path, enum auth_master_flags flags)
 					   &auth_master_vfuncs);
 
 	conn->event_parent = conn->event = event_create(NULL);
-	event_add_category(conn->event_parent, &event_category_auth_master_client);
+	event_add_category(conn->event_parent, &event_category_auth_client);
 	event_set_append_log_prefix(conn->event_parent, "auth-master: ");
 	event_set_forced_debug(conn->event_parent,
 			       HAS_ALL_BITS(flags, AUTH_MASTER_FLAG_DEBUG));
@@ -526,11 +523,20 @@ auth_master_next_request_id(struct auth_master_connection *conn)
 
 void auth_user_info_export(string_t *str, const struct auth_user_info *info)
 {
+	const char *const *fieldp;
+
 	if (info->service != NULL) {
 		str_append(str, "\tservice=");
 		str_append(str, info->service);
 	}
-
+	if (info->session_id != NULL) {
+		str_append(str, "\tsession=");
+		str_append_tabescaped(str, info->session_id);
+	}
+	if (info->local_name != NULL) {
+		str_append(str, "\tlocal_name=");
+		str_append_tabescaped(str, info->local_name);
+	}
 	if (info->local_ip.family != 0)
 		str_printfa(str, "\tlip=%s", net_ip2addr(&info->local_ip));
 	if (info->local_port != 0)
@@ -553,6 +559,17 @@ void auth_user_info_export(string_t *str, const struct auth_user_info *info)
 		str_printfa(str, "\treal_rport=%d", info->real_remote_port);
 	if (info->debug)
 		str_append(str, "\tdebug");
+	if (info->forward_fields != NULL &&
+	    *info->forward_fields != '\0') {
+		str_append(str, "\tforward_fields=");
+		str_append_tabescaped(str, info->forward_fields);
+	}
+	if (array_is_created(&info->extra_fields)) {
+		array_foreach(&info->extra_fields, fieldp) {
+			str_append_c(str, '\t');
+			str_append_tabescaped(str, *fieldp);
+		}
+	}
 }
 
 static void
@@ -574,6 +591,10 @@ auth_master_user_event_create(struct auth_master_connection *conn,
 	if (info != NULL) {
 		if (info->service != NULL)
 			event_add_str(conn->event, "service", info->service);
+		if (info->session_id != NULL)
+			event_add_str(conn->event, "session", info->session_id);
+		if (info->local_name != NULL)
+			event_add_str(conn->event, "local_name", info->local_name);
 		if (info->local_ip.family != 0) {
 			event_add_str(conn->event, "local_ip",
 				      net_ip2addr(&info->local_ip));
@@ -590,6 +611,18 @@ auth_master_user_event_create(struct auth_master_connection *conn,
 			event_add_int(conn->event, "remote_port",
 				      info->remote_port);
 		}
+		if (info->real_local_ip.family != 0)
+			event_add_str(conn->event, "real_local_ip",
+				      net_ip2addr(&info->real_local_ip));
+		if (info->real_remote_ip.family != 0)
+			event_add_str(conn->event, "real_remote_ip",
+				    net_ip2addr(&info->real_remote_ip));
+		if (info->real_local_port != 0)
+			event_add_int(conn->event, "real_local_port",
+				      info->real_local_port);
+		if (info->real_remote_port != 0)
+			event_add_int(conn->event, "real_remote_port",
+				      info->real_remote_port);
 	}
 }
 
@@ -902,6 +935,7 @@ auth_master_user_list_init(struct auth_master_connection *conn,
 	str_append_c(str, '\n');
 
 	auth_master_user_event_create(conn, "userdb list: ", info);
+	event_add_str(conn->event," user_mask", user_mask);
 
 	struct event_passthrough *e =
 		event_create_passthrough(conn->event)->

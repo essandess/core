@@ -519,7 +519,7 @@ director_connection_disconnect_timeout(void *context ATTR_UNUSED)
 		count++;
 
 	if (count != 0) {
-		i = 0; count = i_rand() % count;
+		i = 0; count = i_rand_limit(count);
 		for (conn = director_connections; i < count; conn = conn->next) {
 			i_assert(conn != NULL);
 			i++;
@@ -593,7 +593,7 @@ int main(int argc, char *argv[])
 	if (admin_path == NULL)
 		i_fatal("director-doveadm socket path missing");
 
-	master_service_init_log(master_service, "director-test: ");
+	master_service_init_log(master_service);
 
 	main_init(admin_path);
 	master_service_init_finish(master_service);

@@ -46,10 +46,9 @@ buffer_check_limits(struct real_buffer *buf, size_t pos, size_t data_size)
 	unsigned int extra;
 	size_t new_size;
 
-	if (unlikely((size_t)-1 - pos < data_size)) {
-		i_panic("Buffer write out of range (%"PRIuSIZE_T
-			" + %"PRIuSIZE_T")", pos, data_size);
-	}
+	if (unlikely((size_t)-1 - pos < data_size))
+		i_panic("Buffer write out of range (%zu + %zu)", pos, data_size);
+
 	new_size = pos + data_size;
 
 	if (new_size > buf->used && buf->used < buf->dirty) {
@@ -66,8 +65,8 @@ buffer_check_limits(struct real_buffer *buf, size_t pos, size_t data_size)
 	extra = buf->dynamic ? 1 : 0;
 	if (new_size + extra > buf->alloc) {
 		if (unlikely(!buf->dynamic)) {
-			i_panic("Buffer full (%"PRIuSIZE_T" > %"PRIuSIZE_T", "
-				"pool %s)", pos + data_size, buf->alloc,
+			i_panic("Buffer full (%zu > %zu, pool %s)",
+				pos + data_size, buf->alloc,
 				buf->pool == NULL ? "<none>" :
 				pool_get_name(buf->pool));
 		}
@@ -134,6 +133,15 @@ void buffer_create_from_const_data(buffer_t *buffer,
 buffer_t *buffer_create_dynamic(pool_t pool, size_t init_size)
 {
 	struct real_buffer *buf;
+
+#ifdef DEBUG
+	/* we increment this by 1 later on, so if it's SIZE_MAX
+	   it turns into 0 and hides a potential bug.
+
+	   Too scary to use in production for now, though. This
+	   can change in future. */
+	i_assert(init_size < SIZE_MAX);
+#endif
 
 	buf = p_new(pool, struct real_buffer, 1);
 	buf->pool = pool;

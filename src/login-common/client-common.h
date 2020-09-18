@@ -87,6 +87,7 @@ struct client_auth_reply {
 	in_port_t port;
 	unsigned int proxy_timeout_msecs;
 	unsigned int proxy_refresh_secs;
+	unsigned int proxy_host_immediate_failure_after_secs;
 	enum login_proxy_ssl_flags ssl_flags;
 
 	/* all the key=value fields returned by passdb */
@@ -123,7 +124,9 @@ struct client_vfuncs {
 			    const char *text);
 	void (*proxy_reset)(struct client *client);
 	int (*proxy_parse_line)(struct client *client, const char *line);
-	void (*proxy_error)(struct client *client, const char *text);
+	void (*proxy_failed)(struct client *client,
+			     enum login_proxy_failure_type type,
+			     const char *reason, bool reconnecting);
 	const char *(*proxy_get_state)(struct client *client);
 	void (*send_raw_data)(struct client *client,
 			      const void *data, size_t size);
@@ -146,6 +149,7 @@ struct client {
 
 	time_t created;
 	int refcount;
+	struct event *event;
 
 	struct ip_addr local_ip;
 	struct ip_addr ip;
@@ -280,9 +284,6 @@ struct client *clients_get_first_fd_proxy(void);
 void client_add_forward_field(struct client *client, const char *key,
 			      const char *value);
 void client_set_title(struct client *client);
-void client_log(struct client *client, const char *msg);
-void client_log_err(struct client *client, const char *msg);
-void client_log_warn(struct client *client, const char *msg);
 const char *client_get_extra_disconnect_reason(struct client *client);
 
 void client_auth_respond(struct client *client, const char *response);
@@ -312,6 +313,9 @@ void client_send_raw(struct client *client, const char *data);
 void client_common_send_raw_data(struct client *client,
 				 const void *data, size_t size);
 void client_common_default_free(struct client *client);
+void client_common_proxy_failed(struct client *client,
+				enum login_proxy_failure_type type,
+				const char *reason, bool reconnecting);
 
 void client_set_auth_waiting(struct client *client);
 void client_auth_send_challenge(struct client *client, const char *data);
@@ -325,7 +329,6 @@ int client_auth_read_line(struct client *client);
 
 void client_proxy_finish_destroy_client(struct client *client);
 void client_proxy_log_failure(struct client *client, const char *line);
-void client_proxy_failed(struct client *client, bool send_line);
 const char *client_proxy_get_state(struct client *client);
 
 void clients_notify_auth_connected(void);

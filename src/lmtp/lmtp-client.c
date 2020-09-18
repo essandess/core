@@ -29,7 +29,7 @@
 
 static const struct smtp_server_callbacks lmtp_callbacks;
 static const struct lmtp_client_vfuncs lmtp_client_vfuncs;
-	
+
 struct lmtp_module_register lmtp_module_register = { 0 };
 
 static struct client *clients = NULL;
@@ -65,7 +65,11 @@ static void refresh_proctitle(void)
 		client = clients;
 		str_append(title, client_remote_id(client));
 		str_append_c(title, ' ');
-		str_append(title, client_state_get_name(client));
+		str_append(title, smtp_server_state_names[client->state.state]);
+		if (client->state.args != NULL && *client->state.args != '\0') {
+			str_append_c(title, ' ');
+			str_append(title, client->state.args);
+		}
 		break;
 	default:
 		str_printfa(title, "%u connections", clients_count);
@@ -143,6 +147,10 @@ static void client_read_settings(struct client *client, bool ssl)
 struct client *client_create(int fd_in, int fd_out,
 			     const struct master_service_connection *conn)
 {
+	static const char *rcpt_param_extensions[] = {
+		LMTP_RCPT_FORWARD_PARAMETER, NULL };
+	static const struct smtp_capability_extra cap_rcpt_forward = {
+		.name = LMTP_RCPT_FORWARD_CAPABILITY };
 	enum lmtp_client_workarounds workarounds;
 	struct smtp_server_settings lmtp_set;
 	struct client *client;
@@ -188,6 +196,7 @@ struct client *client_create(int fd_in, int fd_out,
 	lmtp_set.hostname = client->unexpanded_lda_set->hostname;
 	lmtp_set.login_greeting = client->lmtp_set->login_greeting;
 	lmtp_set.max_message_size = (uoff_t)-1;
+	lmtp_set.rcpt_param_extensions = rcpt_param_extensions;
 	lmtp_set.rcpt_domain_optional = TRUE;
 	lmtp_set.max_client_idle_time_msecs = CLIENT_IDLE_TIMEOUT_MSECS;
 	lmtp_set.rawlog_dir = client->lmtp_set->lmtp_rawlog_dir;
@@ -203,10 +212,14 @@ struct client *client_create(int fd_in, int fd_out,
 			SMTP_SERVER_WORKAROUND_MAILBOX_FOR_PATH;
 	}
 
-	client->conn = smtp_server_connection_create
-		(lmtp_server, fd_in, fd_out,
-			&conn->remote_ip, conn->remote_port,
-			conn->ssl, &lmtp_set, &lmtp_callbacks, client);
+	client->conn = smtp_server_connection_create(
+		lmtp_server, fd_in, fd_out,
+		&conn->remote_ip, conn->remote_port, conn->ssl,
+		&lmtp_set, &lmtp_callbacks, client);
+	if (smtp_server_connection_is_trusted(client->conn)) {
+		smtp_server_connection_add_extra_capability(
+			client->conn, &cap_rcpt_forward);
+	}
 
 	DLLIST_PREPEND(&clients, client);
 	clients_count++;
@@ -224,6 +237,8 @@ struct client *client_create(int fd_in, int fd_out,
 
 void client_state_reset(struct client *client)
 {
+	i_free(client->state.args);
+
 	if (client->local != NULL)
 		lmtp_local_deinit(&client->local);
 	if (client->proxy != NULL)
@@ -265,17 +280,6 @@ client_default_destroy(struct client *client, const char *enh_code,
 	master_service_client_connection_destroyed(master_service);
 }
 
-const char *client_state_get_name(struct client *client)
-{
-	enum smtp_server_state state;
-
-	if (client->conn == NULL)
-		state = client->last_state;
-	else
-		state = smtp_server_connection_get_state(client->conn);
-	return smtp_server_state_names[state];
-}
-
 void client_disconnect(struct client *client, const char *enh_code,
 		       const char *reason)
 {
@@ -288,12 +292,12 @@ void client_disconnect(struct client *client, const char *enh_code,
 	if (reason == NULL)
 		reason = "Connection closed";
 	e_info(client->event, "Disconnect from %s: %s (state=%s)",
-	       client_remote_id(client), reason, client_state_get_name(client));
+	       client_remote_id(client), reason,
+			        smtp_server_state_names[client->state.state]);
 
 	if (conn != NULL) {
-		client->last_state = smtp_server_connection_get_state(conn);
-		smtp_server_connection_terminate(&conn,
-			(enh_code == NULL ? "4.0.0" : enh_code), reason);
+		smtp_server_connection_terminate(
+			&conn, (enh_code == NULL ? "4.0.0" : enh_code), reason);
 	}
 }
 
@@ -330,9 +334,27 @@ client_default_trans_free(struct client *client,
 }
 
 static void
-client_connection_state_changed(void *context ATTR_UNUSED,
-	enum smtp_server_state newstate ATTR_UNUSED)
+client_connection_state_changed(void *context,
+				enum smtp_server_state new_state,
+				const char *new_args)
 {
+	struct client *client = (struct client *)context;
+
+	i_free(client->state.args);
+
+	client->state.state = new_state;
+	client->state.args = i_strdup(new_args);
+
+	if (clients_count == 1)
+		refresh_proctitle();
+}
+
+void client_update_data_state(struct client *client, const char *new_args)
+{
+	i_assert(client->state.state == SMTP_SERVER_STATE_DATA);
+	i_free(client->state.args);
+	client->state.args = i_strdup(new_args);
+
 	if (clients_count == 1)
 		refresh_proctitle();
 }
@@ -353,10 +375,7 @@ client_connection_proxy_data_updated(void *context,
 static void client_connection_disconnect(void *context, const char *reason)
 {
 	struct client *client = (struct client *)context;
-	struct smtp_server_connection *conn = client->conn;
 
-	if (conn != NULL)
-		client->last_state = smtp_server_connection_get_state(conn);
 	client_disconnect(client, NULL, reason);
 }
 
@@ -385,7 +404,7 @@ static bool client_connection_is_trusted(void *context)
 			break;
 		}
 
-		if (net_is_in_network(&client->remote_ip, &net_ip, bits))
+		if (net_is_in_network(&client->real_remote_ip, &net_ip, bits))
 			return TRUE;
 	}
 	return FALSE;

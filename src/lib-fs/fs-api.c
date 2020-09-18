@@ -25,6 +25,17 @@ static ARRAY(const struct fs *) fs_classes;
 
 static void fs_classes_init(void);
 
+static struct event *fs_create_event(struct fs *fs, struct event *parent)
+{
+	struct event *event;
+
+	event = event_create(parent);
+	event_add_category(event, &event_category_fs);
+	event_set_append_log_prefix(event,
+		t_strdup_printf("fs-%s: ", fs->name));
+	return event;
+}
+
 static int
 fs_alloc(const struct fs *fs_class, const char *args,
 	 const struct fs_settings *set, struct fs **fs_r, const char **error_r)
@@ -39,6 +50,8 @@ fs_alloc(const struct fs *fs_class, const char *args,
 	fs->set.debug = set->debug;
 	fs->set.enable_timing = set->enable_timing;
 	i_array_init(&fs->module_contexts, 5);
+	fs->event = fs_create_event(fs, set->event);
+	event_set_forced_debug(fs->event, fs->set.debug);
 
 	T_BEGIN {
 		if ((ret = fs_class->v.init(fs, args, set, &temp_error)) < 0)
@@ -134,17 +147,6 @@ static void fs_class_try_load_plugin(const char *driver)
 	lib_atexit(fs_class_deinit_modules);
 }
 
-static struct event *fs_create_event(struct fs *fs, struct event *parent)
-{
-	struct event *event;
-
-	event = event_create(parent);
-	event_add_category(event, &event_category_fs);
-	event_set_append_log_prefix(event,
-		t_strdup_printf("fs-%s: ", fs->name));
-	return event;
-}
-
 int fs_init(const char *driver, const char *args,
 	    const struct fs_settings *set,
 	    struct fs **fs_r, const char **error_r)
@@ -165,7 +167,6 @@ int fs_init(const char *driver, const char *args,
 	}
 	if (fs_alloc(fs_class, args, set, fs_r, error_r) < 0)
 		return -1;
-	(*fs_r)->event = fs_create_event(*fs_r, set->event);
 	event_set_ptr((*fs_r)->event, FS_EVENT_FIELD_FS, *fs_r);
 
 	temp_file_prefix = set->temp_file_prefix != NULL ?
@@ -226,6 +227,10 @@ void fs_unref(struct fs **_fs)
 	}
 	i_assert(fs->files == NULL);
 
+	if (fs->v.deinit != NULL)
+		fs->v.deinit(fs);
+
+	fs_deinit(&fs->parent);
 	event_unref(&fs->event);
 	i_free(fs->username);
 	i_free(fs->session_id);
@@ -235,7 +240,7 @@ void fs_unref(struct fs **_fs)
 			stats_dist_deinit(&fs->stats.timings[i]);
 	}
 	T_BEGIN {
-		fs->v.deinit(fs);
+		fs->v.free(fs);
 	} T_END;
 	array_free_i(&module_contexts_arr);
 }
@@ -323,6 +328,17 @@ void fs_file_free(struct fs_file *file)
 	event_unref(&file->event);
 	pool_unref(&file->metadata_pool);
 	i_free(file->last_error);
+}
+
+void fs_file_set_flags(struct fs_file *file,
+		       enum fs_open_flags add_flags,
+		       enum fs_open_flags remove_flags)
+{
+	file->flags |= add_flags;
+	file->flags &= ~remove_flags;
+
+	if (file->parent != NULL)
+		fs_file_set_flags(file->parent, add_flags, remove_flags);
 }
 
 void fs_file_close(struct fs_file *file)
@@ -446,10 +462,8 @@ static void fs_file_timing_start(struct fs_file *file, enum fs_op op)
 {
 	if (!file->fs->set.enable_timing)
 		return;
-	if (file->timing_start[op].tv_sec == 0) {
-		if (gettimeofday(&file->timing_start[op], NULL) < 0)
-			i_fatal("gettimeofday() failed: %m");
-	}
+	if (file->timing_start[op].tv_sec == 0)
+		i_gettimeofday(&file->timing_start[op]);
 }
 
 static void
@@ -458,8 +472,7 @@ fs_timing_end(struct stats_dist **timing, const struct timeval *start_tv)
 	struct timeval now;
 	long long diff;
 
-	if (gettimeofday(&now, NULL) < 0)
-		i_fatal("gettimeofday() failed: %m");
+	i_gettimeofday(&now);
 
 	diff = timeval_diff_usecs(&now, start_tv);
 	if (diff > 0) {
@@ -479,8 +492,9 @@ void fs_file_timing_end(struct fs_file *file, enum fs_op op)
 	file->timing_start[op].tv_sec = 0;
 }
 
-int fs_get_metadata(struct fs_file *file,
-		    const ARRAY_TYPE(fs_metadata) **metadata_r)
+int fs_get_metadata_full(struct fs_file *file,
+			 enum fs_get_metadata_flags flags,
+			 const ARRAY_TYPE(fs_metadata) **metadata_r)
 {
 	int ret;
 
@@ -490,21 +504,29 @@ int fs_get_metadata(struct fs_file *file,
 			*metadata_r = &file->metadata;
 			return 0;
 		}
-		fs_set_error(file->event, "Metadata not supported by backend");
+		fs_set_error(file->event, ENOTSUP, "Metadata not supported by backend");
 		return -1;
 	}
 	if (!file->read_or_prefetch_counted &&
 	    !file->lookup_metadata_counted) {
-		file->lookup_metadata_counted = TRUE;
-		file->fs->stats.lookup_metadata_count++;
+		if ((flags & FS_GET_METADATA_FLAG_LOADED_ONLY) == 0) {
+			file->lookup_metadata_counted = TRUE;
+			file->fs->stats.lookup_metadata_count++;
+		}
 		fs_file_timing_start(file, FS_OP_METADATA);
 	}
 	T_BEGIN {
-		ret = file->fs->v.get_metadata(file, metadata_r);
+		ret = file->fs->v.get_metadata(file, flags, metadata_r);
 	} T_END;
 	if (!(ret < 0 && errno == EAGAIN))
 		fs_file_timing_end(file, FS_OP_METADATA);
 	return ret;
+}
+
+int fs_get_metadata(struct fs_file *file,
+		    const ARRAY_TYPE(fs_metadata) **metadata_r)
+{
+	return fs_get_metadata_full(file, 0, metadata_r);
 }
 
 int fs_lookup_metadata(struct fs_file *file, const char *key,
@@ -516,6 +538,15 @@ int fs_lookup_metadata(struct fs_file *file, const char *key,
 		return -1;
 	*value_r = fs_metadata_find(metadata, key);
 	return *value_r != NULL ? 1 : 0;
+}
+
+const char *fs_lookup_loaded_metadata(struct fs_file *file, const char *key)
+{
+	const ARRAY_TYPE(fs_metadata) *metadata;
+
+	if (fs_get_metadata_full(file, FS_GET_METADATA_FLAG_LOADED_ONLY, &metadata) < 0)
+		i_panic("FS_GET_METADATA_FLAG_LOADED_ONLY lookup can't fail");
+	return fs_metadata_find(metadata, key);
 }
 
 const char *fs_file_path(struct fs_file *file)
@@ -593,12 +624,17 @@ fs_set_verror(struct event *event, const char *fmt, va_list args)
 		file->last_error = new_error;
 	} else {
 		i_assert(iter != NULL);
-		/* Preserve the first error for iters. That's the first
-		   thing that went wrong and broke the iteration. */
-		if (iter->last_error == NULL)
-			iter->last_error = new_error;
-		else
-			i_free(new_error);
+		if (iter->last_error != NULL &&
+		    strcmp(iter->last_error, new_error) == 0) {
+			/* identical error - ignore */
+		} else if (iter->last_error != NULL) {
+			/* multiple fs_set_error() calls before the iter
+			   finishes */
+			e_error(iter->fs->event, "%s (overwriting error)",
+				iter->last_error);
+		}
+		i_free(iter->last_error);
+		iter->last_error = new_error;
 	}
 }
 
@@ -645,7 +681,9 @@ ssize_t fs_read_via_stream(struct fs_file *file, void *buf, size_t size)
 		return -1;
 	}
 	if (ret < 0 && file->pending_read_input->stream_errno != 0) {
-		fs_set_error(file->event, "read(%s) failed: %s",
+		fs_set_error(file->event,
+			     file->pending_read_input->stream_errno,
+			     "read(%s) failed: %s",
 			     i_stream_get_name(file->pending_read_input),
 			     i_stream_get_error(file->pending_read_input));
 	} else {
@@ -859,7 +897,8 @@ int fs_write_stream_finish(struct fs_file *file, struct ostream **output)
 		o_stream_uncork(file->output);
 		if ((ret = o_stream_finish(file->output)) <= 0) {
 			i_assert(ret < 0);
-			fs_set_error(file->event, "write(%s) failed: %s",
+			fs_set_error(file->event, file->output->stream_errno,
+				     "write(%s) failed: %s",
 				     o_stream_get_name(file->output),
 				     o_stream_get_error(file->output));
 			success = FALSE;
@@ -1006,7 +1045,7 @@ int fs_stat(struct fs_file *file, struct stat *st_r)
 	int ret;
 
 	if (file->fs->v.stat == NULL) {
-		fs_set_error(file->event, "fs_stat() not supported");
+		fs_set_error(file->event, ENOTSUP, "fs_stat() not supported");
 		return -1;
 	}
 
@@ -1112,7 +1151,7 @@ int fs_copy(struct fs_file *src, struct fs_file *dest)
 	i_assert(src->fs == dest->fs);
 
 	if (src->fs->v.copy == NULL) {
-		fs_set_error(src->event, "fs_copy() not supported");
+		fs_set_error(src->event, ENOTSUP, "fs_copy() not supported");
 		return -1;
 	}
 
@@ -1194,10 +1233,8 @@ fs_iter_init_with_event(struct fs *fs, struct event *event,
 		 (fs_get_properties(fs) & FS_PROPERTY_OBJECTIDS) != 0);
 
 	fs->stats.iter_count++;
-	if (fs->set.enable_timing) {
-		if (gettimeofday(&now, NULL) < 0)
-			i_fatal("gettimeofday() failed: %m");
-	}
+	if (fs->set.enable_timing)
+		i_gettimeofday(&now);
 	if (fs->v.iter_init == NULL) {
 		iter = i_new(struct fs_iter, 1);
 		iter->fs = fs;
@@ -1232,7 +1269,7 @@ int fs_iter_deinit(struct fs_iter **_iter, const char **error_r)
 	DLLIST_REMOVE(&fs->iters, iter);
 
 	if (fs->v.iter_deinit == NULL) {
-		fs_set_error(event, "FS iteration not supported");
+		fs_set_error(event, ENOTSUP, "FS iteration not supported");
 		ret = -1;
 	} else T_BEGIN {
 		ret = iter->fs->v.iter_deinit(iter);
@@ -1284,9 +1321,23 @@ const struct fs_stats *fs_get_stats(struct fs *fs)
 	return &fs->stats;
 }
 
-void fs_set_error(struct event *event, const char *fmt, ...)
+void fs_set_error(struct event *event, int err, const char *fmt, ...)
 {
 	va_list args;
+
+	i_assert(err != 0);
+
+	errno = err;
+	va_start(args, fmt);
+	fs_set_verror(event, fmt, args);
+	va_end(args);
+}
+
+void fs_set_error_errno(struct event *event, const char *fmt, ...)
+{
+	va_list args;
+
+	i_assert(errno != 0);
 
 	va_start(args, fmt);
 	fs_set_verror(event, fmt, args);
@@ -1295,8 +1346,7 @@ void fs_set_error(struct event *event, const char *fmt, ...)
 
 void fs_file_set_error_async(struct fs_file *file)
 {
-	errno = EAGAIN;
-	fs_set_error(file->event, "Asynchronous operation in progress");
+	fs_set_error(file->event, EAGAIN, "Asynchronous operation in progress");
 }
 
 static uint64_t

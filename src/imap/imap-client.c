@@ -303,7 +303,8 @@ const char *client_stats(struct client *client)
 	if (var_expand_with_funcs(str, client->set->imap_logout_format,
 				  tab, mail_user_var_expand_func_table,
 				  client->user, &error) < 0) {
-		i_error("Failed to expand imap_logout_format=%s: %s",
+		e_error(client->event,
+			"Failed to expand imap_logout_format=%s: %s",
 			client->set->imap_logout_format, error);
 	}
 	return str_c(str);
@@ -341,7 +342,7 @@ client_command_stats_append(string_t *str,
 	str_printfa(str, ", %"PRIu64" B in + %"PRIu64,
 		    stats->bytes_in, stats->bytes_out);
 	if (buffered_size > 0)
-		str_printfa(str, "+%"PRIuSIZE_T, buffered_size);
+		str_printfa(str, "+%zu", buffered_size);
 	str_append(str, " B out");
 }
 
@@ -426,7 +427,7 @@ static const char *client_get_commands_status(struct client *client)
 
 static void client_log_disconnect(struct client *client, const char *reason)
 {
-	i_info("%s %s", reason, client_stats(client));
+	e_info(client->event, "%s %s", reason, client_stats(client));
 }
 
 static void client_default_destroy(struct client *client, const char *reason)
@@ -910,7 +911,10 @@ struct client_command_context *client_command_alloc(struct client *client)
 void client_command_init_finished(struct client_command_context *cmd)
 {
 	event_add_str(cmd->event, "cmd_tag", cmd->tag);
-	event_add_str(cmd->event, "cmd_name", t_str_ucase(cmd->name));
+	/* use "unknown" until we checked that the command name is known/valid */
+	event_add_str(cmd->event, "cmd_name", "unknown");
+	/* the actual command name received from client - as-is */
+	event_add_str(cmd->event, "cmd_input_name", cmd->name);
 }
 
 static struct client_command_context *
@@ -1217,6 +1221,8 @@ static bool client_command_input(struct client_command_context *cmd)
 	} else if ((command = command_find(cmd->name)) != NULL) {
 		cmd->func = command->func;
 		cmd->cmd_flags = command->flags;
+		/* valid command - overwrite the "unknown" string set earlier */
+		event_add_str(cmd->event, "cmd_name", command->name);
 		if (client_command_is_ambiguous(cmd)) {
 			/* do nothing until existing commands are finished */
 			i_assert(cmd->state == CLIENT_COMMAND_STATE_WAIT_INPUT);

@@ -83,11 +83,11 @@ fs_dict_init(struct fs *_fs, const char *args, const struct fs_settings *set,
 	return 0;
 }
 
-static void fs_dict_deinit(struct fs *_fs)
+static void fs_dict_free(struct fs *_fs)
 {
 	struct dict_fs *fs = (struct dict_fs *)_fs;
 
-	dict_deinit(&fs->dict);
+	if (fs->dict != NULL) dict_deinit(&fs->dict);
 	i_free(fs);
 }
 
@@ -160,12 +160,12 @@ static int fs_dict_lookup(struct dict_fs_file *file)
 	if (ret > 0)
 		return 0;
 	else if (ret < 0) {
-		errno = EIO;
-		fs_set_error(file->file.event, "dict_lookup(%s) failed: %s", file->key, error);
+		fs_set_error(file->file.event, EIO,
+			     "dict_lookup(%s) failed: %s", file->key, error);
 		return -1;
 	} else {
-		errno = ENOENT;
-		fs_set_error(file->file.event, "Dict key %s doesn't exist", file->key);
+		fs_set_error(file->file.event, ENOENT,
+			     "Dict key %s doesn't exist", file->key);
 		return -1;
 	}
 }
@@ -243,8 +243,8 @@ static int fs_dict_write_stream_finish(struct fs_file *_file, bool success)
 	}
 	}
 	if (dict_transaction_commit(&trans, &error) < 0) {
-		errno = EIO;
-		fs_set_error(_file->event, "Dict transaction commit failed: %s", error);
+		fs_set_error(_file->event, EIO,
+			     "Dict transaction commit failed: %s", error);
 		return -1;
 	}
 	return 1;
@@ -272,8 +272,8 @@ static int fs_dict_delete(struct fs_file *_file)
 	trans = dict_transaction_begin(fs->dict);
 	dict_unset(trans, file->key);
 	if (dict_transaction_commit(&trans, &error) < 0) {
-		errno = EIO;
-		fs_set_error(_file->event, "Dict transaction commit failed: %s", error);
+		fs_set_error(_file->event, EIO,
+			     "Dict transaction commit failed: %s", error);
 		return -1;
 	}
 	return 0;
@@ -316,7 +316,8 @@ static int fs_dict_iter_deinit(struct fs_iter *_iter)
 
 	ret = dict_iterate_deinit(&iter->dict_iter, &error);
 	if (ret < 0)
-		fs_set_error(_iter->event, "Dict iteration failed: %s", error);
+		fs_set_error(_iter->event, EIO,
+			     "Dict iteration failed: %s", error);
 	return ret;
 }
 
@@ -325,7 +326,8 @@ const struct fs fs_class_dict = {
 	.v = {
 		fs_dict_alloc,
 		fs_dict_init,
-		fs_dict_deinit,
+		NULL,
+		fs_dict_free,
 		fs_dict_get_properties,
 		fs_dict_file_alloc,
 		fs_dict_file_init,

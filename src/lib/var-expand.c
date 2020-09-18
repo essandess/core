@@ -189,6 +189,7 @@ var_expand_short(const struct var_expand_table *table, char key,
 	}
 	if (*error_r == NULL)
 		*error_r = t_strdup_printf("Unknown variable '%%%c'", key);
+	*var_r = t_strdup_printf("UNSUPPORTED_VARIABLE_%c", key);
 	return 0;
 }
 
@@ -553,7 +554,7 @@ int var_expand_with_funcs(string_t *dest, const char *str,
 				break;
 
 			var = NULL;
-			if (*str == '{' && (end = strchr(str, '}')) != NULL) {
+			if (*str == '{' && strchr(str, '}') != NULL) {
 				/* %{long_key} */
 				unsigned int ctr = 1;
 				bool escape = FALSE;
@@ -578,16 +579,19 @@ int var_expand_with_funcs(string_t *dest, const char *str,
 				len = end - (str + 1);
 				ret = var_expand_long(&ctx, str+1, len,
 						      &var, error_r);
-				i_assert(var != NULL);
 				str = end;
 			} else {
 				ret = var_expand_short(ctx.table, *str,
 						       &var, error_r);
 			}
+			i_assert(var != NULL);
+
 			if (final_ret > ret)
 				final_ret = ret;
 
-			if (var != NULL) {
+			if (ret <= 0)
+				str_append(dest, var);
+			else {
 				for (i = 0; i < modifier_count; i++)
 					var = modifier[i](var, &ctx);
 
@@ -595,9 +599,10 @@ int var_expand_with_funcs(string_t *dest, const char *str,
 					/* if offset is < 0 then we want to
 					   start at the end */
 					size_t len = strlen(var);
+					size_t offset_from_end = -ctx.offset;
 
-					if (len > (size_t)-ctx.offset)
-						var += len + ctx.offset;
+					if (len > offset_from_end)
+						var += len - offset_from_end;
 				} else {
 					while (*var != '\0' && ctx.offset > 0) {
 						ctx.offset--;

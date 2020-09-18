@@ -334,6 +334,7 @@ static int search_arg_match_cached(struct index_search_context *ctx,
 	time_t date;
 	int tz_offset;
 	bool have_tz_offset;
+	int ret;
 
 	switch (arg->type) {
 	/* internal dates */
@@ -383,6 +384,15 @@ static int search_arg_match_cached(struct index_search_context *ctx,
 		default:
 			i_unreached();
 		}
+
+	/* save date attribute */
+	case SEARCH_SAVEDATESUPPORTED:
+		ret = mail_get_save_date(ctx->cur_mail, &date);
+		if (ret < 0) {
+			search_cur_mail_failed(ctx);
+			return -1;
+		}
+		return ret;
 
 	/* sizes */
 	case SEARCH_SMALLER:
@@ -1288,8 +1298,7 @@ index_storage_search_init(struct mailbox_transaction_context *t,
 	if (ctx->mail_ctx.max_mails == 0)
 		ctx->mail_ctx.max_mails = UINT_MAX;
 	ctx->next_time_check_cost = SEARCH_INITIAL_MAX_COST;
-	if (gettimeofday(&ctx->last_nonblock_timeval, NULL) < 0)
-		i_fatal("gettimeofday() failed: %m");
+	i_gettimeofday(&ctx->last_nonblock_timeval);
 
 	mailbox_get_open_status(t->box, STATUS_MESSAGES, &status);
 	ctx->mail_ctx.progress_max = status.messages;
@@ -1436,6 +1445,7 @@ static bool search_arg_is_static(struct mail_search_arg *arg)
 	case SEARCH_HEADER_COMPRESS_LWSP:
 	case SEARCH_BODY:
 	case SEARCH_TEXT:
+	case SEARCH_SAVEDATESUPPORTED:
 	case SEARCH_GUID:
 	case SEARCH_MAILBOX:
 	case SEARCH_MAILBOX_GUID:
@@ -1553,8 +1563,7 @@ static bool search_would_block(struct index_search_context *ctx)
 	if (ctx->cost < ctx->next_time_check_cost)
 		return FALSE;
 
-	if (gettimeofday(&now, NULL) < 0)
-		i_fatal("gettimeofday() failed: %m");
+	i_gettimeofday(&now);
 
 	usecs = timeval_diff_usecs(&now, &ctx->last_nonblock_timeval);
 	if (usecs < 0) {

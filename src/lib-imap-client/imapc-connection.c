@@ -172,11 +172,12 @@ imapc_auth_failed(struct imapc_connection *conn, const struct imapc_command_repl
 {
 	struct imapc_command_reply reply = *_reply;
 
-	if (reply.state != IMAPC_COMMAND_STATE_DISCONNECTED)
-		reply.state = IMAPC_COMMAND_STATE_AUTH_FAILED;
 	reply.text_without_resp = reply.text_full =
 		t_strdup_printf("Authentication failed: %s", error);
-	i_error("imapc(%s): %s", conn->name, reply.text_full);
+	if (reply.state != IMAPC_COMMAND_STATE_DISCONNECTED) {
+		reply.state = IMAPC_COMMAND_STATE_AUTH_FAILED;
+		i_error("imapc(%s): %s", conn->name, reply.text_full);
+	}
 	imapc_login_callback(conn, &reply);
 
 	if (conn->client->state_change_callback == NULL)
@@ -1591,7 +1592,7 @@ static void imapc_connection_input(struct imapc_connection *conn)
 				    conn->disconnect_reason);
 		} else if (ret == -2) {
 			str_printfa(str, "Server sent too large input "
-				    "(buffer full at %"PRIuSIZE_T")",
+				    "(buffer full at %zu)",
 				    i_stream_get_data_size(conn->input));
 		} else if (conn->ssl_iostream == NULL) {
 			errstr = conn->input->stream_errno == 0 ? "EOF" :
@@ -2421,10 +2422,10 @@ void imapc_command_sendvf(struct imapc_command *cmd,
 				imap_append_quoted(cmd->data, arg);
 			else if ((cmd->conn->capabilities &
 				  IMAPC_CAPABILITY_LITERALPLUS) != 0) {
-				str_printfa(cmd->data, "{%"PRIuSIZE_T"+}\r\n%s",
+				str_printfa(cmd->data, "{%zu+}\r\n%s",
 					    strlen(arg), arg);
 			} else {
-				str_printfa(cmd->data, "{%"PRIuSIZE_T"}\r\n%s",
+				str_printfa(cmd->data, "{%zu}\r\n%s",
 					    strlen(arg), arg);
 			}
 			break;
